@@ -3,9 +3,9 @@ package sysmet
 import (
 	"encoding/binary"
 	"encoding/json"
+	"os"
 	"time"
 
-	"github.com/dgraph-io/badger/v3"
 	"github.com/pkg/errors"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
@@ -13,7 +13,15 @@ import (
 	"github.com/shirou/gopsutil/v3/load"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/net"
+	"go.etcd.io/bbolt"
 )
+
+// Bucket names containing sysmet versions.
+var bucketName = []byte("sysmet-v1")
+
+// ErrUninitialized is returned when sysmet's bucket is not found in the
+// database. This may happen when the database has never been updated before.
+var ErrUninitialized = errors.New("bucket not initialized")
 
 // Snapshot describes a single snapshot of data written. It implements
 // sort.Interface.
@@ -91,23 +99,21 @@ var TTL = 365 * 24 * time.Hour
 
 // Database describes a wrapped database instance.
 type Database struct {
-	db    *badger.DB
-	write bool
+	db *bbolt.DB
 }
 
 // Open opens a database. Databases must be closed once they're done.
 func Open(path string, write bool) (*Database, error) {
-	opts := badger.DefaultOptions(path)
-	opts.Logger = nil
-	opts.ReadOnly = !write
-	opts.SyncWrites = write
-
-	b, err := badger.Open(opts)
+	b, err := bbolt.Open(path, os.ModePerm, &bbolt.Options{
+		Timeout:      time.Minute,
+		FreelistType: bbolt.FreelistArrayType,
+		ReadOnly:     !write,
+	})
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to open db")
+		return nil, errors.Wrap(err, "bbolt")
 	}
 
-	return &Database{b, write}, nil
+	return &Database{b}, nil
 }
 
 // Close closes the database. Calling Close twice does nothing.
@@ -118,49 +124,33 @@ func (db *Database) Close() error {
 // GC cleans up the database. Since this is a fairly expensive operation, it
 // should only be called rarely.
 func (db *Database) GC(age time.Duration) error {
-	if !db.write {
+	if db.db.IsReadOnly() {
 		return errors.New("database not writable")
 	}
 
 	now := convertWithUnixZero(time.Now())
 	sec := uint32(age / time.Second)
 
-	// Collect value garbage before running log GC.
-	err := db.gc(now, sec)
-	vlgcErr := db.db.RunValueLogGC(0.5)
-
-	if err != nil {
-		return err
-	}
-
-	return vlgcErr
+	return db.gc(now, sec)
 }
 
 func (db *Database) gc(now, sec uint32) error {
+
 	// precalculate the key for seeking.
 	before := unixToBE(now - sec)
 
-	return db.db.Update(func(tx *badger.Txn) error {
-		iter := tx.NewIterator(badger.IteratorOptions{
-			Reverse: true, // reverse for seeking
-		})
-		defer iter.Close()
-
-		// Only store the last error.
-		var lastErr error
-
-		for iter.Seek(before); iter.Valid(); iter.Next() {
-			// Copy the keys into a new byte slice, because Delete will
-			// reference it until the end of the txn per documentation.
-			key := iter.Item().KeyCopy(nil)
-
-			if err := tx.Delete(key); err != nil {
-				lastErr = err
-			}
+	return db.db.Batch(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		if b == nil {
+			return ErrUninitialized
 		}
 
-		if lastErr != nil {
-			return errors.Wrap(lastErr, "last error encountered while deleting")
+		cs := b.Cursor()
+
+		for k, _ := cs.Seek(before); k != nil; k, _ = cs.Prev() {
+			if err := cs.Delete(); err != nil {
+				return errors.Wrap(err, "failed to delete under cursor")
+			}
 		}
 
 		return nil
@@ -169,23 +159,27 @@ func (db *Database) gc(now, sec uint32) error {
 
 // Update updates a set of prepared metrics into the database.
 func (db *Database) Update(snapshot Snapshot) error {
-	if !db.write {
+	if db.db.IsReadOnly() {
 		return errors.New("database not writable")
 	}
 
-	b, err := json.Marshal(snapshot)
+	v, err := json.Marshal(snapshot)
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal")
 	}
 
-	entry := badger.Entry{
-		Key:       unixToBE(snapshot.Time),
-		Value:     b,
-		ExpiresAt: uint64(snapshot.Time) + uint64(TTL/time.Second),
+	k := unixToBE(snapshot.Time)
+
+	tx := func(tx *bbolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(bucketName)
+		if err != nil {
+			return errors.Wrap(err, "failed to create bucket")
+		}
+
+		return b.Put(k, v)
 	}
 
-	err = db.db.Update(func(tx *badger.Txn) error { return tx.SetEntry(&entry) })
-	if err != nil {
+	if err = db.db.Update(tx); err != nil {
 		return errors.Wrap(err, "failed to update db")
 	}
 
@@ -228,10 +222,10 @@ type ReadOpts struct {
 
 // Read returns a new database reader/iterator with second precision. The reader
 // must be closed after it's done.
-func (db *Database) Read(opts ReadOpts) *Reader {
+func (db *Database) Read(opts ReadOpts) (*Reader, error) {
 	if !opts.Start.IsZero() && !opts.End.IsZero() {
 		if !opts.End.After(opts.Start) {
-			panic("end > start assertion failed")
+			return nil, errors.New("opts.End should be after opts.Start")
 		}
 	}
 
@@ -252,20 +246,30 @@ func (db *Database) Read(opts ReadOpts) *Reader {
 		prec:  uint32(opts.Precision / time.Second),
 	}
 
-	txn := db.db.NewTransaction(false)
-	iter := txn.NewIterator(badger.IteratorOptions{Reverse: true})
+	tx, err := db.db.Begin(false)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to begin tx")
+	}
+
+	bucket := tx.Bucket(bucketName)
+	if bucket == nil {
+		return nil, ErrUninitialized
+	}
+
+	cursor := bucket.Cursor()
 
 	if r.end > 0 {
 		seek := unixToBE(r.end)
-		iter.Seek(seek[:])
+		r.key, r.value = cursor.Seek(seek)
 	} else {
-		iter.Rewind()
+		r.key, r.value = cursor.Last()
 	}
 
-	r.txn = txn
-	r.iter = iter
+	r.tx = tx
+	r.bk = bucket
+	r.cs = cursor
 
-	return &r
+	return &r, nil
 }
 
 // Reader is a backwards metric reader that allows aggregation over metrics.
@@ -275,19 +279,24 @@ func (db *Database) Read(opts ReadOpts) *Reader {
 // iteration is halted and the error is returned up. If the error is StopRead,
 // then the iteration is stopped and no errors are returned.
 type Reader struct {
-	txn  *badger.Txn
-	iter *badger.Iterator
+	tx *bbolt.Tx
+	bk *bbolt.Bucket
+	cs *bbolt.Cursor
 
+	// current state
+	key   []byte
+	value []byte
+	prev  uint32
+
+	// constants
 	start uint32
 	end   uint32
 	prec  uint32
-	prev  uint32
 }
 
 // Close closes the reader.
-func (r *Reader) Close() {
-	r.iter.Close()
-	r.txn.Discard()
+func (r *Reader) Close() error {
+	return r.tx.Rollback()
 }
 
 // ReadAll reads all of the reader from start to end. The reader is closed when
@@ -314,9 +323,9 @@ func (r *Reader) ReadAll() []Snapshot {
 	return snapshots
 }
 
-// ReadExact reads exactly from start to end; the function panics if start or
-// end is 0. The reader is closed when this function is returned. This function
-// will return a slice with non-existent points as padding.
+// ReadExact reads exactly from start to end; the function returns nil if start
+// or end is 0. The reader is closed when this function is returned. This
+// function will return a slice with non-existent points as padding.
 func (r *Reader) ReadExact() []Snapshot {
 	if r.start == 0 || r.end == 0 {
 		panic("r.start or r.end is zero")
@@ -342,64 +351,51 @@ func (r *Reader) ReadExact() []Snapshot {
 	return snapshots
 }
 
+// step updates the internal cursor backwards.
+func (r *Reader) step() {
+	r.key, r.value = r.cs.Prev()
+}
+
+// isValid returns true if the reader is still valid.
+func (r *Reader) isValid() bool { return r.key != nil }
+
 // Prev reads the previous item into the given snapshot pointer or the last item
 // if the Reader has never been used before. False is returned if nothing is
 // read and the reader is closed, otherwise true is.
 func (r *Reader) Prev(snapshot *Snapshot) bool {
-	for r.iter.Valid() {
-		switch r.read(snapshot) {
-		case readOK:
-			return true
-		case readSkip:
-			continue
-		case readBroken:
-			r.Close()
-			return false
+	for r.isValid() {
+		time := readUnixBE(r.key)
+
+		if r.start > 0 && r.start > time {
+			break
 		}
+
+		// Skip if the current item is within the current frame.
+		if r.prev > 0 && time > r.prev {
+			r.step()
+			continue
+		}
+
+		// Unmarshal fail is a fatal error, so we invalidate everything.
+		if err := json.Unmarshal(r.value, snapshot); err != nil {
+			break
+		}
+
+		// Update the timestamp.
+		snapshot.Time = time
+
+		// Get the next tick from the current time, whichever is further.
+		r.prev -= r.prec
+		if prev := time - r.prec; prev < r.prev {
+			r.prev = prev
+		}
+
+		// Seek for the next call.
+		r.step()
+
+		return true
 	}
 
 	r.Close()
 	return false
-}
-
-type readStatus uint8
-
-const (
-	readOK readStatus = iota
-	readSkip
-	readBroken
-)
-
-func (r *Reader) read(snapshot *Snapshot) readStatus {
-	item := r.iter.Item()
-	time := readUnixBE(item.Key())
-
-	if r.start > 0 && r.start > time {
-		return readBroken
-	}
-
-	// Skip if the current item is within the current frame.
-	if r.prev > 0 && time > r.prev {
-		r.iter.Next()
-		return readSkip
-	}
-
-	err := item.Value(func(v []byte) error { return json.Unmarshal(v, snapshot) })
-	if err != nil {
-		return readBroken
-	}
-
-	// Update the timestamp.
-	snapshot.Time = time
-
-	// Get the next tick from the current time, whichever is further.
-	r.prev -= r.prec
-	if prev := time - r.prec; prev < r.prev {
-		r.prev = prev
-	}
-
-	// Seek for the next call.
-	r.iter.Next()
-
-	return readOK
 }

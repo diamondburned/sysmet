@@ -105,14 +105,18 @@ func (r *renderData) snapshots() [][]sysmet.Snapshot {
 	defer d.Close()
 
 	for i, time := range SnapshotTimes {
-		r := d.Read(sysmet.ReadOpts{
+		reader, err := d.Read(sysmet.ReadOpts{
 			Start:     now.Add(-time.Dura),
 			End:       now,
 			Precision: time.Dura / PointsPerGraph,
 		})
+		if err != nil {
+			r.Error = errors.Wrapf(err, "failed to read time %s", time.Time)
+			return nil
+		}
 
-		snapshots[i] = r.ReadExact()
-		r.Close()
+		snapshots[i] = reader.ReadExact()
+		reader.Close()
 	}
 
 	return snapshots

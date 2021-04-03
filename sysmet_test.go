@@ -2,11 +2,10 @@ package sysmet
 
 import (
 	"math/rand"
+	"os"
 	"testing"
 	"time"
 
-	"github.com/dgraph-io/badger/v3"
-	"github.com/dgraph-io/badger/v3/options"
 	"github.com/shirou/gopsutil/v3/load"
 )
 
@@ -23,23 +22,22 @@ func prepDB(t *testing.T) *testedDatabase {
 
 	snapshots, now := gatherMetrics(t, 20)
 
-	opts := badger.DefaultOptions("")
-	opts = opts.WithLoggingLevel(badger.ERROR)
-	opts.Compression = options.None
-	opts.SyncWrites = true
-	opts.InMemory = true
-
-	b, err := badger.Open(opts)
+	tmpDir := os.TempDir()
+	f, err := os.CreateTemp(tmpDir, "sysmet-test-")
 	if err != nil {
-		t.Fatal("failed to open badger:", err)
+		t.Fatal("failed to mktemp for db:", err)
+	}
+	path := f.Name()
+	f.Close()
+
+	d, err := Open(path, true)
+	if err != nil {
+		t.Fatal("failed to open db:", err)
 	}
 
 	db := testedDatabase{
-		Database: Database{
-			db:    b,
-			write: true,
-		},
-		start: now,
+		Database: *d,
+		start:    now,
 	}
 
 	for _, snapshot := range snapshots {
@@ -49,13 +47,24 @@ func prepDB(t *testing.T) *testedDatabase {
 	}
 
 	t.Cleanup(func() {
+		if err := os.RemoveAll(path); err != nil {
+			t.Error("failed to clean up db:", err)
+		}
+	})
+
+	t.Cleanup(func() {
 		if err := db.gc(db.start+20, 10); err != nil {
 			t.Fatal("failed to gc:", err)
 		}
 
-		snapshots := db.Read(ReadOpts{}).ReadAll()
-		if len(snapshots) != 10 {
-			t.Fatalf("expected %d snapshots after GC, got %d", 10, len(snapshots))
+		r, err := db.Read(ReadOpts{})
+		if err != nil {
+			t.Fatal("failed to create reader after GC:", err)
+		}
+		defer r.Close()
+
+		if snapshotNum := len(r.ReadAll()); snapshotNum != 10 {
+			t.Fatalf("expected %d snapshots after GC, got %d", 10, snapshotNum)
 		}
 	})
 
@@ -90,11 +99,14 @@ func gatherMetrics(t *testing.T, n uint32) ([]Snapshot, uint32) {
 func TestSparsePrec(t *testing.T) {
 	db := prepDB(t)
 
-	r := db.Read(ReadOpts{
+	r, err := db.Read(ReadOpts{
 		Start:     time.Unix(int64(db.start-10), 0),
 		End:       time.Unix(int64(db.start+20), 0),
 		Precision: 5 * time.Second,
 	})
+	if err != nil {
+		t.Fatal("failed to create reader:", err)
+	}
 	defer r.Close()
 
 	snapshots := r.ReadExact()
@@ -116,11 +128,14 @@ func TestDensePrec(t *testing.T) {
 	db := prepDB(t)
 
 	// Second is the minimum accuracy.
-	r := db.Read(ReadOpts{
+	r, err := db.Read(ReadOpts{
 		Start:     time.Unix(int64(db.start), 0),
 		End:       time.Unix(int64(db.start+20), 0),
 		Precision: time.Second,
 	})
+	if err != nil {
+		t.Fatal("failed to create reader:", err)
+	}
 	defer r.Close()
 
 	snapshots := r.ReadExact()
@@ -143,13 +158,16 @@ func TestDensePrec(t *testing.T) {
 func TestFramed(t *testing.T) {
 	db := prepDB(t)
 
-	r := db.Read(ReadOpts{
+	r, err := db.Read(ReadOpts{
 		// Go backwards from the last 10s to the last 2s with 2s accuracy. With
 		// 20 points for 20 seconds, 1 each, this should give us 4 points.
 		Start:     time.Unix(int64(db.start), 0).Add(10 * time.Second),
 		End:       time.Unix(int64(db.start), 0).Add(18 * time.Second),
 		Precision: 2 * time.Second,
 	})
+	if err != nil {
+		t.Fatal("failed to create reader:", err)
+	}
 	defer r.Close()
 
 	snapshots := r.ReadAll()
