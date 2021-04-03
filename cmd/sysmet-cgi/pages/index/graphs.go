@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"git.unix.lgbt/diamondburned/sysmet"
+	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-cgi/components/metric"
 	"github.com/shirou/gopsutil/v3/net"
 )
 
@@ -50,6 +51,7 @@ type graphData struct {
 	Points [][]float64
 	MinPt  float64
 	MaxPt  float64
+	Symm   bool
 }
 
 type graphFlattenFunc = func([]sysmet.Snapshot) graphData
@@ -66,6 +68,8 @@ var graphFlatteners = map[string]graphFlattenFunc{
 	"CPU Usage": func(snapshots []sysmet.Snapshot) graphData {
 		graphData := graphData{
 			Names:  []string{"User", "System"},
+			MinPt:  0,
+			MaxPt:  metric.NoFloat,
 			Points: newPoints(snapshots, 2),
 		}
 
@@ -97,6 +101,8 @@ var graphFlatteners = map[string]graphFlattenFunc{
 	"Load Average": func(snapshots []sysmet.Snapshot) graphData {
 		graphData := graphData{
 			Names:  []string{"1 minute", "5 minutes", "15 minutes"},
+			MinPt:  0,
+			MaxPt:  metric.NoFloat,
 			Points: newPoints(snapshots, 3),
 		}
 
@@ -116,6 +122,9 @@ var graphFlatteners = map[string]graphFlattenFunc{
 		graphData := graphData{
 			Names:  []string{"Received", "Sent"},
 			Points: newPoints(snapshots, 2),
+			MinPt:  metric.NoFloat,
+			MaxPt:  metric.NoFloat,
+			Symm:   true,
 		}
 
 		// Keep track of the last counters between entries in the snapshots,

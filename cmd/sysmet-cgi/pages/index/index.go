@@ -27,6 +27,7 @@ var (
 				Samples:   data.Points,
 				MaxSample: data.MaxPt,
 				MinSample: data.MinPt,
+				Symmetric: data.Symm,
 			}))
 
 			return template.HTML(builder.String())

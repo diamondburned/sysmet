@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math"
 	"strings"
 )
 
@@ -38,6 +39,7 @@ type GraphData struct {
 	Samples   [][]float64
 	MaxSample float64 // either must be non-0
 	MinSample float64
+	Symmetric bool
 }
 
 // Graph renders an SVG graph with the given data. The default width and height
@@ -51,6 +53,9 @@ const (
 	pathWidth  = 25 - 2
 )
 
+// NoFloat is the sentinel value to make path find the max/min number.
+var NoFloat = math.NaN()
+
 func path(data GraphData, samples []float64) template.HTMLAttr {
 	paths := strings.Builder{}
 	paths.Grow(10 * 1024) // 10KB
@@ -59,14 +64,24 @@ func path(data GraphData, samples []float64) template.HTMLAttr {
 	min := data.MinSample
 	max := data.MaxSample
 
-	if min == 0 && max == 0 {
-		for i, x := range samples {
-			if i == 0 || x < min {
+	if min == NoFloat || max == NoFloat {
+		for _, x := range samples {
+			if min == NoFloat || x < min {
 				min = x
 			}
-			if i == 0 || x > max {
+			if max == NoFloat || x > max {
 				max = x
 			}
+		}
+	}
+
+	// If th data is symmetric, then the minimum and maximum should be the same
+	// and is the biggest of the two.
+	if data.Symmetric {
+		if min > max {
+			max = min
+		} else {
+			min = max
 		}
 	}
 
