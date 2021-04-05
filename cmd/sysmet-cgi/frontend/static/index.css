@@ -4,8 +4,30 @@ header {
 	flex-direction: column;
 }
 
+header > * {
+	margin: 5px;
+}
+
 pre {
 	white-space: pre-wrap;
+}
+
+#time-value {
+	width: 4em;
+	border: 0;
+	border-bottom: 1px solid #666;
+	padding: 0 .5em;
+}
+
+#time-range,
+#time-range > .inputs {
+	display: flex;
+}
+
+#time-range > .inputs {
+	flex-direction: column;
+	align-items: center;
+	margin-right: 1em;
 }
 
 .graph {
@@ -107,9 +129,16 @@ pre {
 	position: absolute;
 	right: 0;
 
+	font-size: 0.8em;
+
 	padding: 5px;
 	margin-top:  4px;
 	margin-left: 2px;
+}
+
+.graph-text > time {
+	text-align: center;
+	font-weight: bold;
 }
 
 .graph-table {

@@ -169,23 +169,23 @@ func (i *Iterator) ReadAll() []Snapshot {
 // SnapshotBucket contains a bucket of snapshot timeframes. It is used by
 // ReadExact to allow the caller to manually calculate the averages.
 type SnapshotBucket struct {
-	Snapshots []Snapshot
+	Snapshots []Snapshot `json:"snapshots"`
 }
 
 // SnapshotBuckets contains all snapshots as well as buckets of those snapshots
 // over the given time.
 type SnapshotBuckets struct {
-	Range     BucketRange
-	Snapshots []Snapshot
-	Buckets   []SnapshotBucket
+	Range     BucketRange      `json:"range"`
+	Snapshots []Snapshot       `json:"-"`
+	Buckets   []SnapshotBucket `json:"buckets"`
 }
 
 // BucketRange describes the range of snapshot buckets.
 type BucketRange struct {
 	// From is always after To.
-	From time.Time
-	To   time.Time
-	Prec time.Duration
+	From time.Time     `json:"from"`
+	To   time.Time     `json:"to"`
+	Prec time.Duration `json:"prec"`
 }
 
 // ReadExact reads exactly the given time range, meaning the list of buckets

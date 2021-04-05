@@ -1,10 +1,6 @@
-<p align="center">
-	<h1 align="center">
-		<a href="https://unix.lgbt/~diamond/sysmet">sysmet</a>
-	</h1>
-	<br>
-	<img alt="Screenshot" src="screenshot.png" />
-</p>
+# [sysmet](https://unix.lgbt/~diamond/sysmet)
+
+![screenshot](screenshot.png)
 
 A no-JavaScript CGI-based lightweight system metrics collector and frontend,
 effectively a very tiny version of the Grafana + Telegraf + InfluxDB stack.

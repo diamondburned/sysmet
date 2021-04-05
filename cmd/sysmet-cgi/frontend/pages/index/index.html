@@ -3,6 +3,10 @@
 <meta charset="utf-8" />
 <link rel="stylesheet" href="/style.css">
 
+{{ if .Refresh }}
+<meta http-equiv="refresh" content="60">
+{{ end }}
+
 <title>System Metrics</title>
 
 <style>
@@ -11,7 +15,26 @@
 
 <header>
 	{{ template "logo" }}
-	<small>{{ .HumanTime }} to now</small>
+
+	<form id="time-range" action="">
+		<div class="inputs">
+			<div>
+				<label for="time-value">Time range:</label>
+				<input type="text" id="time-value" name="t" value="{{ .Dura }}">
+				<label>ago to now.</label>
+			</div>
+
+			<div>
+				<input
+					type="checkbox" id="refresh" name="refresh"
+					{{ if .Refresh }} checked {{ end }}
+				>
+				<label for="refresh">Auto-refresh every minute</label>
+			</div>
+		</div>
+
+		<input type="submit" value="Change">
+	</form>
 </header>
 
 <main>

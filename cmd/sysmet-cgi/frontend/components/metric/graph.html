@@ -26,9 +26,11 @@
 			<div class="graph-hover">
 				<div class="graph-body">
 					<div class="graph-text">
-						<strong class="date">
-							{{ timestamp ($graph.RangeTime $j) }}
-						</strong>
+						{{ with ($graph.RangeTime $j) }}
+						<time datetime="{{ timestamp . }}">
+							{{ timestamp . }} ({{ relTime . $graph.Range }})
+						</time>
+						{{ end }}
 
 						<div class="graph-table">
 							{{ range $topName, $i := $sampl }}

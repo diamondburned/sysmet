@@ -35,6 +35,9 @@ func init() {
 	frontend.Templater.Func("timestamp", func(t time.Time) string {
 		return t.Format("2006-01-02 15:04:05")
 	})
+	frontend.Templater.Func("relTime", func(t time.Time, r sysmet.BucketRange) string {
+		return humanize.RelTime(t, r.From, "ago", "later")
+	})
 }
 
 // GraphData contains the data for graphing. Width and Height are optional.
@@ -161,14 +164,14 @@ func (data GraphData) IsLaterHalf(i int) bool {
 // FormatDecimalPlaces returns a new PtString formatter that formats a floating
 // point number to the given decimal places.
 func FormatDecimalPlaces(dec int) func(float64) string {
-	f := "%." + strconv.Itoa(dec) + "f%%"
+	f := "%." + strconv.Itoa(dec) + "f"
 	return func(v float64) string { return fmt.Sprintf(f, v) }
 }
 
 // FormatSigFigs returns a new PtString formatter that formats a floating point
 // number to the given significant figures with trailing zeros trimmed out.
 func FormatSigFigs(sf int) func(float64) string {
-	f := "%." + strconv.Itoa(sf) + "g%%"
+	f := "%." + strconv.Itoa(sf) + "g"
 	return func(v float64) string { return fmt.Sprintf(f, v) }
 }
 

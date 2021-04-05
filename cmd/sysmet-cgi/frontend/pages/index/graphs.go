@@ -1,11 +1,12 @@
 package index
 
 import (
-	"math"
+	"fmt"
 	"time"
 
 	"git.unix.lgbt/diamondburned/sysmet"
 	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-cgi/frontend/components/metric"
+	"github.com/dustin/go-humanize"
 	"github.com/shirou/gopsutil/v3/cpu"
 )
 
@@ -23,16 +24,18 @@ func IgnoreNetwork(dev string) {
 
 // sumNetworks sums up all network devices' sent and received byte counters.
 func sumNetworks(bucket sysmet.SnapshotBucket) (sent, recv float64) {
-	l := float64(len(bucket.Snapshots))
-
 	for _, snapshot := range bucket.Snapshots {
 		for _, dev := range snapshot.Network {
 			if _, ignore := ignoredNetworks[dev.Name]; ignore {
 				continue
 			}
 
-			sent += float64(dev.BytesSent) / l
-			recv += float64(dev.BytesRecv) / l
+			if f := float64(dev.BytesSent); f > sent {
+				sent = f
+			}
+			if f := float64(dev.BytesRecv); f > recv {
+				recv = f
+			}
 		}
 	}
 
@@ -47,14 +50,20 @@ func cpuUsageBuckets(bucket sysmet.SnapshotBucket) (active, total float64) {
 	}
 
 	for _, snapshot := range bucket.Snapshots {
+		var sumActive, sumTotal float64
+
 		for _, cpu := range snapshot.CPUs {
-			active += sumCPUTime(cpu)
-			total += active + cpu.Idle
+			active := sumCPUTime(cpu)
+
+			sumActive += active
+			sumTotal += active + cpu.Idle
+		}
+
+		if sumActive > active {
+			active = sumActive
+			total = sumTotal
 		}
 	}
-
-	active /= float64(len(bucket.Snapshots))
-	total /= float64(len(bucket.Snapshots))
 
 	return
 }
@@ -65,19 +74,19 @@ func sumCPUTime(t cpu.TimesStat) float64 {
 
 type snapshotAccessFunc = func(sysmet.Snapshot) float64
 
-// meansOfBucketsInto calculates the means of each getter's accumulated value in
+// maxOfBucketsInto calculates the means of each getter's accumulated value in
 // the current bucket into the given sums slice.
-func meansOfBucketsInto(b sysmet.SnapshotBucket, gets []snapshotAccessFunc, sums []float64) {
-	l := float64(len(b.Snapshots))
-
+func maxOfBucketsInto(b sysmet.SnapshotBucket, gets []snapshotAccessFunc, sums []float64) {
 	for _, bucket := range b.Snapshots {
 		for i, get := range gets {
-			sums[i] += get(bucket) / l
+			if val := get(bucket); val > sums[i] {
+				sums[i] = val
+			}
 		}
 	}
 }
 
-func fillMeans(
+func fillMaxs(
 	buckets sysmet.SnapshotBuckets,
 	points [][]float64, gets []snapshotAccessFunc,
 ) {
@@ -93,7 +102,7 @@ func fillMeans(
 			sums[i] = 0
 		}
 
-		meansOfBucketsInto(bucket, gets, sums)
+		maxOfBucketsInto(bucket, gets, sums)
 
 		for n := range gets {
 			points[n][i] = sums[n]
@@ -107,13 +116,8 @@ type SnapshotTime struct {
 	Dura time.Duration
 }
 
-const (
-	// PointsPerGraph defines the number of points per graph with respect to the
-	// total duration.
-	PointsPerGraph = 200
-	// GraphHeight controls the graph height.
-	GraphHeight = 28
-)
+// GraphHeight controls the graph height.
+const GraphHeight = 28
 
 type graphFlattenFunc = func(sysmet.SnapshotBuckets) metric.GraphData
 
@@ -142,7 +146,8 @@ var graphFlatteners = map[string]graphFlattenFunc{
 			// that core's times.
 			active, total := cpuUsageBuckets(buckets.Buckets[i])
 
-			if !math.IsNaN(total) {
+			// NaN is NOT larger than NaN.
+			if lastActive > active && lastTotal > total {
 				graphData.Samples[0][i] = (lastActive - active) / (lastTotal - total) * 100
 			}
 
@@ -154,11 +159,17 @@ var graphFlatteners = map[string]graphFlattenFunc{
 	"RAM Usage": func(buckets sysmet.SnapshotBuckets) metric.GraphData {
 		graphData := metric.NewGraphData(buckets, GraphHeight, "RAM", "Swap")
 		graphData.Colors = []uint32{0xFF9830, 0x5794F2} // orange, blue
-		graphData.PtString = metric.FormatPercentage
+		graphData.PtString = metric.FormatBytes
 
-		fillMeans(buckets, graphData.Samples, []snapshotAccessFunc{
-			func(s sysmet.Snapshot) float64 { return s.Memory.UsedPercent },
-			func(s sysmet.Snapshot) float64 { return s.Swap.UsedPercent },
+		if len(buckets.Snapshots) > 0 {
+			last := buckets.Snapshots[len(buckets.Snapshots)-1]
+			graphData.Names[0] += fmt.Sprintf("\t(total %s)", humanize.Bytes(last.Memory.Total))
+			graphData.Names[1] += fmt.Sprintf("\t(total %s)", humanize.Bytes(last.Swap.Total))
+		}
+
+		fillMaxs(buckets, graphData.Samples, []snapshotAccessFunc{
+			func(s sysmet.Snapshot) float64 { return float64(s.Memory.Used) },
+			func(s sysmet.Snapshot) float64 { return float64(s.Swap.Used) },
 		})
 
 		return graphData
@@ -169,7 +180,7 @@ var graphFlatteners = map[string]graphFlattenFunc{
 		graphData.Colors = []uint32{0x8AC3FF, 0x459AEA, 0x0071D5} // light to dark shades of blue
 		graphData.PtString = metric.FormatSigFigs(3)
 
-		fillMeans(buckets, graphData.Samples, []snapshotAccessFunc{
+		fillMaxs(buckets, graphData.Samples, []snapshotAccessFunc{
 			func(s sysmet.Snapshot) float64 { return s.LoadAvgs.Load1 },
 			func(s sysmet.Snapshot) float64 { return s.LoadAvgs.Load5 },
 			func(s sysmet.Snapshot) float64 { return s.LoadAvgs.Load15 },
@@ -201,7 +212,7 @@ var graphFlatteners = map[string]graphFlattenFunc{
 
 			currSent, currRecv := sumNetworks(buckets.Buckets[i])
 
-			if !math.IsNaN(lastSent) && !math.IsNaN(lastRecv) {
+			if lastSent > currSent && lastRecv > currRecv {
 				graphData.Samples[0][i] = lastSent - currSent
 				graphData.Samples[1][i] = lastRecv - currRecv
 			}
