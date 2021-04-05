@@ -1,0 +1,18 @@
+<link rel="stylesheet" href="/style.css">
+
+<title>Error - sysmet</title>
+<style>
+	header {
+		display: flex;
+		align-items: center;
+		flex-direction: column;
+	}
+</style>
+
+<header>
+	{{ template "logo" }}
+</header>
+
+<main>
+	{{ template "errbox" .Error }}
+</main>

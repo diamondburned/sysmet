@@ -1,0 +1,24 @@
+{{ define "logo" }}
+<style>
+	.rainbow-text {
+		background-image: linear-gradient(-45deg,
+			violet, indigo, blue, green, yellow, orange, red);
+		filter: brightness(80%) contrast(50%) saturate(1000%);
+		color:  transparent;
+		-webkit-background-clip: text;
+	}
+
+	.logo {
+		font-weight: bold;
+	}
+</style>
+
+<pre class="logo rainbow-text">
+                              _   
+ ___ _   _ ___ _ __ ___   ___| |_ 
+/ __| | | / __| '_ ` _ \ / _ \ __|
+\__ \ |_| \__ \ | | | | |  __/ |_ 
+|___/\__, |___/_| |_| |_|\___|\__|
+     |___/                        
+</pre>
+{{ end }}

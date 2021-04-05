@@ -1,0 +1,71 @@
+{{ define "graph" }}
+
+{{ $graph := (prepareGraph .) }}
+{{ with $graph }}
+
+{{ if .Error }}
+{{ template "errbox" $graph.Error }}
+{{ else }}
+<div class="graph-box">
+	<div class="legend">
+		<small class="max">{{ $graph.PointInString $graph.MaxSample }}</small>
+		<small class="mid">{{ $graph.PointInString $graph.MidSample }}</small>
+		<small class="min">{{ $graph.PointInString $graph.MinSample }}</small>
+	</div>
+	<div class="graph">
+		{{ if $graph.Samples }}
+		<div class="graph-hovers">
+			{{ $sampl := (fwdInts (len $graph.Samples)) }}
+			{{ $first := (index $graph.Samples 0) }}
+
+			{{/*
+			   * We're iterating over all inner slices and grabbing outer ones.
+			   */}}
+
+			{{ range $_, $j := (fwdInts (len $first)) }}
+			<div class="graph-hover">
+				<div class="graph-body">
+					<div class="graph-text">
+						<strong class="date">
+							{{ timestamp ($graph.RangeTime $j) }}
+						</strong>
+
+						<div class="graph-table">
+							{{ range $topName, $i := $sampl }}
+							<span
+								class="line-sample-{{ $i }}"
+								style="color:{{ $graph.ColorHex $i }}"
+							>‒</span>
+							<span class="key-sample-{{ $i }}">
+								{{ index $graph.Names $i }}
+							</span>
+							<span class="value-sample-{{ $i }}">
+								{{ $graph.PointInString (index $graph.Samples $i $j) }}
+							</span>
+							{{ end }}
+						</div>
+					</div>
+				</div>
+			</div>
+			{{ end }}
+		</div>
+		{{ end }}
+
+		<svg
+			class="graph-line"
+			xmlns="http://www.w3.org/2000/svg" version="1.1"
+			viewBox="0 0 {{ .Width }} {{ .Height }}"
+		>
+			{{ range $_, $i := (revInts (len $graph.Samples)) }}
+			<path
+				class="sample-{{ $i }}" stroke="{{ $graph.ColorHex $i }}"
+				d="{{ path $graph (index $graph.Samples $i) }}" />
+			{{ end }}
+		</svg>
+	</div>
+</div>
+{{ end }}
+
+{{ end }}
+
+{{ end }}

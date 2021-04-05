@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<meta charset="utf-8" />
+<link rel="stylesheet" href="/style.css">
+
+<title>System Metrics</title>
+
+<style>
+{{ template "rawcss" }}
+</style>
+
+<header>
+	{{ template "logo" }}
+	<small>{{ .HumanTime }} to now</small>
+</header>
+
+<main>
+	{{ range .Graphs }}
+	<div class="graph-item">
+		<h2>{{ .Name }}</h2>
+		{{ template "graph" .Data }}
+	</div>
+	{{ else }}
+	{{ template "errbox" .Error }}
+	{{ end }}
+</main>
+
+<main>
+	<small>
+		<a href="https://git.unix.lgbt/diamondburned/sysmet">Source code</a>
+		- Licensed under the AGPL v3.0.
+	</small>
+</main>

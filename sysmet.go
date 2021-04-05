@@ -27,25 +27,15 @@ var ErrUninitialized = errors.New("bucket not initialized")
 // sort.Interface.
 type Snapshot struct {
 	CPUs      []cpu.TimesStat
-	Memory    *mem.VirtualMemoryStat
+	Memory    mem.VirtualMemoryStat
+	Swap      mem.SwapMemoryStat
 	Network   []net.IOCountersStat
 	Disks     []disk.UsageStat
 	Temps     []host.TemperatureStat
-	LoadAvgs  *load.AvgStat
-	HostStats *load.MiscStat
+	LoadAvgs  load.AvgStat
+	HostStats load.MiscStat
 
 	Time uint32 `json:"-"`
-}
-
-// zeroSnapshot is a zero-value snapshot containing no nil pointers.
-var zeroSnapshot = Snapshot{
-	CPUs:      []cpu.TimesStat{},
-	Memory:    &mem.VirtualMemoryStat{},
-	Network:   []net.IOCountersStat{},
-	Disks:     []disk.UsageStat{},
-	Temps:     []host.TemperatureStat{},
-	LoadAvgs:  &load.AvgStat{},
-	HostStats: &load.MiscStat{},
 }
 
 // PrepareMetrics prepares a set of metrics to write at once.
@@ -58,12 +48,14 @@ func PrepareMetrics() (Snapshot, error) {
 
 	metricUpdates := map[string]func(){
 		"cpu":  func() { snapshot.CPUs, err = cpu.Times(true) },
-		"mem":  func() { snapshot.Memory, err = mem.VirtualMemory() },
 		"net":  func() { snapshot.Network, err = net.IOCounters(true) },
 		"disk": func() { snapshot.Disks, err = diskUsages() },
 		"temp": func() { snapshot.Temps, err = host.SensorsTemperatures() },
-		"load": func() { snapshot.LoadAvgs, err = load.Avg() },
-		"host": func() { snapshot.HostStats, err = load.Misc() },
+		// For these functions, see ps.go.
+		"mem":  func() { snapshot.Memory, err = virtualMemory() },
+		"swap": func() { snapshot.Swap, err = swapMemory() },
+		"load": func() { snapshot.LoadAvgs, err = loadAvg() },
+		"host": func() { snapshot.HostStats, err = loadMisc() },
 	}
 
 	for key, fn := range metricUpdates {
@@ -135,7 +127,6 @@ func (db *Database) GC(age time.Duration) error {
 }
 
 func (db *Database) gc(now, sec uint32) error {
-
 	// precalculate the key for seeking.
 	before := unixToBE(now - sec)
 
@@ -205,197 +196,8 @@ func convertWithUnixZero(t time.Time) uint32 {
 	return uint32(t.Unix())
 }
 
-// ReadOpts is the options for reading. It describes the range of data to read.
-type ReadOpts struct {
-	// Start is the time to stop reading the metrics backwards. By default, the
-	// zero-value is used, which would read all metrics. The Start time must
-	// ALWAYS be before End.
-	Start time.Time
-	// End is the time to start reading the metrics backwards. The default
-	// zero-value means to read from the latest point.
-	End time.Time
-	// Precision is the gap between each metrics point, which is minimum a
-	// second, in multiples of seconds. It only works if the write frequency is
-	// more than the precision.
-	Precision time.Duration
-}
-
-// Read returns a new database reader/iterator with second precision. The reader
+// Iterator returns a new database iterator with second precision. The iterator
 // must be closed after it's done.
-func (db *Database) Read(opts ReadOpts) (*Reader, error) {
-	if !opts.Start.IsZero() && !opts.End.IsZero() {
-		if !opts.End.After(opts.Start) {
-			return nil, errors.New("opts.End should be after opts.Start")
-		}
-	}
-
-	// Round the precision to be in multiples of seconds.
-	opts.Precision = opts.Precision.Round(time.Second)
-	// Enforce the minimum second precision.
-	if opts.Precision < time.Second {
-		opts.Precision = time.Second
-	}
-
-	start := convertWithUnixZero(opts.Start)
-	end := convertWithUnixZero(opts.End)
-
-	r := Reader{
-		start: start,
-		end:   end,
-		prev:  end,
-		prec:  uint32(opts.Precision / time.Second),
-	}
-
-	tx, err := db.db.Begin(false)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to begin tx")
-	}
-
-	bucket := tx.Bucket(bucketName)
-	if bucket == nil {
-		return nil, ErrUninitialized
-	}
-
-	cursor := bucket.Cursor()
-
-	if r.end > 0 {
-		seek := unixToBE(r.end)
-		r.key, r.value = cursor.Seek(seek)
-	} else {
-		r.key, r.value = cursor.Last()
-	}
-
-	r.tx = tx
-	r.bk = bucket
-	r.cs = cursor
-
-	return &r, nil
-}
-
-// Reader is a backwards metric reader that allows aggregation over metrics.
-//
-// The reader supplies a set of methods that take in a closure callback to be
-// called on each data point. If the callback returns an error, then the
-// iteration is halted and the error is returned up. If the error is StopRead,
-// then the iteration is stopped and no errors are returned.
-type Reader struct {
-	tx *bbolt.Tx
-	bk *bbolt.Bucket
-	cs *bbolt.Cursor
-
-	// current state
-	key   []byte
-	value []byte
-	prev  uint32
-
-	// constants
-	start uint32
-	end   uint32
-	prec  uint32
-}
-
-// Close closes the reader.
-func (r *Reader) Close() error {
-	return r.tx.Rollback()
-}
-
-// ReadAll reads all of the reader from start to end. The reader is closed when
-// this function is returned. This function will return points non-existent in
-// the database if both start and end were given.
-func (r *Reader) ReadAll() []Snapshot {
-	var snapshots []Snapshot
-	var snapshot Snapshot
-
-	for r.Prev(&snapshot) {
-		snapshots = append(snapshots, snapshot)
-		snapshot = Snapshot{}
-	}
-
-	r.Close()
-
-	// https://github.com/golang/go/wiki/SliceTricks
-	// Reverse the snapshots so that the latest entries are first.
-	for i := len(snapshots)/2 - 1; i >= 0; i-- {
-		opposite := len(snapshots) - 1 - i
-		snapshots[i], snapshots[opposite] = snapshots[opposite], snapshots[i]
-	}
-
-	return snapshots
-}
-
-// ReadExact reads exactly from start to end; the function returns nil if start
-// or end is 0. The reader is closed when this function is returned. This
-// function will return a slice with non-existent points as padding.
-func (r *Reader) ReadExact() []Snapshot {
-	if r.start == 0 || r.end == 0 {
-		panic("r.start or r.end is zero")
-	}
-
-	last := (r.end - r.start) / r.prec
-
-	snapshots := make([]Snapshot, last)
-
-	for last > 0 && r.Prev(&snapshots[last-1]) {
-		last--
-	}
-
-	r.Close()
-
-	// Pad unread snapshots.
-	for i, snapshot := range snapshots {
-		if snapshot.Time == 0 {
-			snapshots[i] = zeroSnapshot
-		}
-	}
-
-	return snapshots
-}
-
-// step updates the internal cursor backwards.
-func (r *Reader) step() {
-	r.key, r.value = r.cs.Prev()
-}
-
-// isValid returns true if the reader is still valid.
-func (r *Reader) isValid() bool { return r.key != nil }
-
-// Prev reads the previous item into the given snapshot pointer or the last item
-// if the Reader has never been used before. False is returned if nothing is
-// read and the reader is closed, otherwise true is.
-func (r *Reader) Prev(snapshot *Snapshot) bool {
-	for r.isValid() {
-		time := readUnixBE(r.key)
-
-		if r.start > 0 && r.start > time {
-			break
-		}
-
-		// Skip if the current item is within the current frame.
-		if r.prev > 0 && time > r.prev {
-			r.step()
-			continue
-		}
-
-		// Unmarshal fail is a fatal error, so we invalidate everything.
-		if err := json.Unmarshal(r.value, snapshot); err != nil {
-			break
-		}
-
-		// Update the timestamp.
-		snapshot.Time = time
-
-		// Get the next tick from the current time, whichever is further.
-		r.prev -= r.prec
-		if prev := time - r.prec; prev < r.prev {
-			r.prev = prev
-		}
-
-		// Seek for the next call.
-		r.step()
-
-		return true
-	}
-
-	r.Close()
-	return false
+func (db *Database) Iterator(opts IteratorOpts) (*Iterator, error) {
+	return newIterator(db.db, opts)
 }
