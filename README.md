@@ -1,7 +1,20 @@
-# sysmet
+<p align="center">
+	<h1 align="center">
+		<a href="https://unix.lgbt/~diamond/sysmet">sysmet</a>
+	</h1>
+	<br>
+	<img alt="Screenshot" src="screenshot.png" />
+</p>
 
 A no-JavaScript CGI-based lightweight system metrics collector and frontend,
 effectively a very tiny version of the Grafana + Telegraf + InfluxDB stack.
+
+## API Documentation
+
+Refer to [pkg.go.dev][pkg.go.dev] as well as the [test suites][sysmet_test.go].
+
+[pkg.go.dev]: https://pkg.go.dev/git.unix.lgbt/diamondburned/sysmet
+[sysmet_test.go]: https://git.unix.lgbt/diamondburned/sysmet/src/branch/main/sysmet_test.go
 
 ## Note to Self
 
