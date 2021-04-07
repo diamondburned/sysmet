@@ -122,7 +122,8 @@ func (i *Iterator) Prev(snapshot *Snapshot) bool {
 }
 
 // Remaining returns the number of remaining keys to read until either the
-// database has nothing left or the requested range has been reached.
+// database has nothing left or the requested range has been reached. The cursor
+// position stays the same by the time this function returns.
 func (i *Iterator) Remaining() int {
 	// Remember the current cursor position before we change it, because we'll
 	// need to preserve this.
@@ -140,9 +141,7 @@ func (i *Iterator) Remaining() int {
 	return total
 }
 
-// ReadRemaining reads all of the reader from the current position to end. The
-// reader is closed when this function is returned. This function will return
-// points non-existent in the database if both start and end were given.
+// ReadRemaining reads all of the reader from the current position to end.
 func (i *Iterator) ReadRemaining() []Snapshot {
 	total := i.Remaining()
 	snapshots := make([]Snapshot, total)
@@ -189,10 +188,9 @@ type BucketRange struct {
 }
 
 // ReadExact reads exactly the given time range, meaning the list of buckets
-// will describe exactly the requested range and precision.
-//
-// The function returns a zero-value if from or to was 0. By the time this
-// function returns, the Iterator will have been fully consumed.
+// will describe exactly the requested range and precision. The cursor will
+// automatically be rewound back to the "from" position. The function returns a
+// zero-value if from or to was 0.
 func (i *Iterator) ReadExact(precision time.Duration) SnapshotBuckets {
 	if i.from == 0 || i.to == 0 {
 		return SnapshotBuckets{}
@@ -219,8 +217,6 @@ func (i *Iterator) ReadExact(precision time.Duration) SnapshotBuckets {
 	snapshotIx := len(buckets.Snapshots) - 1 // iterate last to first
 	bucketIx := len(buckets.Buckets) - 1     // iterate last to first
 
-	// TODO: ensure order of buckets: latest last.
-
 	// Precalculate the bucket ranges, which starts from the end position
 	// "from".
 	bucketFrom := from
@@ -233,10 +229,10 @@ func (i *Iterator) ReadExact(precision time.Duration) SnapshotBuckets {
 	// cutBucket stores the current snapshots into the bucket and resets the
 	// indices.
 	cutBucket := func() {
-		// Use a smaller slice of the big snapshots slice for the bucket. This
-		// saves us a lot of copies and allocations.
 		left := snapshotIx + 1
 		buckets.Buckets[bucketIx] = SnapshotBucket{
+			// Use a smaller slice of the big snapshots slice for the bucket.
+			// This saves us a lot of copies and allocations.
 			Snapshots: buckets.Snapshots[left:right],
 		}
 
