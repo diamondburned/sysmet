@@ -2,7 +2,6 @@ package errpage
 
 import (
 	"io"
-
 	"net/http"
 
 	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-cgi/frontend"

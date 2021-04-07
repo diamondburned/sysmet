@@ -16,28 +16,9 @@ import (
 )
 
 func init() {
-	frontend.Templater.Func("path", path)
+	frontend.Templater.Func("drawPaths", drawPaths)
 	frontend.Templater.Func("prepareGraph", prepareGraph)
-	frontend.Templater.Func("fwdInts", func(length int) []int {
-		ixs := make([]int, length)
-		for i := range ixs {
-			ixs[i] = i
-		}
-		return ixs
-	})
-	frontend.Templater.Func("revInts", func(length int) []int {
-		ixs := make([]int, length)
-		for i := range ixs {
-			ixs[i] = len(ixs) - i - 1
-		}
-		return ixs
-	})
-	frontend.Templater.Func("timestamp", func(t time.Time) string {
-		return t.Format("2006-01-02 15:04:05")
-	})
-	frontend.Templater.Func("relTime", func(t time.Time, r sysmet.BucketRange) string {
-		return humanize.RelTime(t, r.From, "ago", "later")
-	})
+	frontend.Templater.Func("renderGraphHovers", renderGraphHovers)
 }
 
 // GraphData contains the data for graphing. Width and Height are optional.
@@ -47,10 +28,10 @@ type GraphData struct {
 	// Colors contains a list of colors that correspond to Names. If there are
 	// more names than colors, then those names will be colored black.
 	Colors []uint32
-	// Samples contains a sampleset list of samples. Sample points can be NaN,
-	// in which it will not be drawn out. If samplesets don't have equal
+	// Samplesets contains a sampleset list of samples. Sample points can be
+	// NaN, in which it will not be drawn out. If samplesets don't have equal
 	// lengths, then an error will be returned and the graph will not be drawn.
-	Samples [][]float64
+	Samplesets [][]float64
 	// PtString formats each sample point into a human-readable string.
 	PtString func(float64) string
 	// Range describes the time range of this graph.
@@ -75,15 +56,15 @@ type GraphData struct {
 // NewGraphData creates a new graph data with reasonable defaults.
 func NewGraphData(b sysmet.SnapshotBuckets, height int, names ...string) GraphData {
 	return GraphData{
-		Names:     names,
-		Samples:   newSamples(b, len(names)),
-		PtString:  FormatDecimalPlaces(3),
-		Range:     b.Range,
-		MaxSample: AutoValue,
-		MinSample: 0,
-		Width:     float64(b.Range.From.Sub(b.Range.To) / b.Range.Prec),
-		Height:    float64(height),
-		NullGap:   false,
+		Names:      names,
+		Samplesets: newSamples(b, len(names)),
+		PtString:   FormatDecimalPlaces(3),
+		Range:      b.Range,
+		MaxSample:  AutoValue,
+		MinSample:  0,
+		Width:      float64(b.Range.From.Sub(b.Range.To) / b.Range.Prec),
+		Height:     float64(height),
+		NullGap:    false,
 	}
 }
 
@@ -102,7 +83,7 @@ func newSamples(b sysmet.SnapshotBuckets, n int) [][]float64 {
 // AddSamples adds a new set of samples with the given n length. If n mismatches
 // existing samplesets sizes, then it'll panic.
 func (data *GraphData) AddSamples(name string, n int) int {
-	if len(data.Samples) > 0 && n != len(data.Samples[0]) {
+	if len(data.Samplesets) > 0 && n != len(data.Samplesets[0]) {
 		panic("n mismatches len(data.Samples[0])")
 	}
 
@@ -113,14 +94,24 @@ func (data *GraphData) AddSamples(name string, n int) int {
 	}
 
 	data.Names = append(data.Names, name)
-	data.Samples = append(data.Samples, sm)
+	data.Samplesets = append(data.Samplesets, sm)
 
 	return ix
 }
 
+// PointInString calls data.PtString if pt is a number. If pt is NaN, then
+// "null" is returned.
+func (data *GraphData) PointInString(pt float64) string {
+	if math.IsNaN(pt) {
+		return "null"
+	}
+
+	return data.PtString(pt)
+}
+
 // ColorHex returns the name's color in CSS hexadecimal format. It returns an
 // empty string if the name isn't in the colors list.
-func (data GraphData) ColorHex(nameIx int) template.HTMLAttr {
+func (data *GraphData) ColorHex(nameIx int) template.HTMLAttr {
 	if nameIx >= len(data.Colors) {
 		return "#000"
 	}
@@ -129,35 +120,42 @@ func (data GraphData) ColorHex(nameIx int) template.HTMLAttr {
 }
 
 // MidSample returns the middle sample between min and max.
-func (data GraphData) MidSample() float64 {
+func (data *GraphData) MidSample() float64 {
 	return (data.MaxSample + data.MinSample) / 2
 }
 
-// PointInString calls data.PtString if pt is a number. If pt is NaN, then
-// "null" is returned.
-func (data GraphData) PointInString(pt float64) string {
-	if math.IsNaN(pt) {
-		return "null"
-	}
-
-	return data.PtString(pt)
-}
-
 // RangeTime returns the time of the sample from the given index.
-func (data GraphData) RangeTime(i int) time.Time {
-	if len(data.Samples) == 0 {
+func (data *GraphData) RangeTime(i int) time.Time {
+	if len(data.Samplesets) == 0 {
 		return time.Time{}
 	}
 
 	duration := data.Range.From.Sub(data.Range.To)
 	duration *= time.Duration(i)
-	duration /= time.Duration(len(data.Samples[0]))
+	duration /= time.Duration(len(data.Samplesets[0]))
 
 	return data.Range.To.Add(duration)
 }
 
+// IsNullAt returns true if all samplesets at the given index contain NaN
+// values.
+func (data *GraphData) IsNullAt(i int) bool {
+	// Bound check; return false if out of bounds.
+	if len(data.Samplesets) == 0 || len(data.Samplesets[0]) <= i {
+		return false
+	}
+
+	for _, samples := range data.Samplesets {
+		if !math.IsNaN(samples[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
 // IsLaterHalf returns true if the current width index is beyond half.
-func (data GraphData) IsLaterHalf(i int) bool {
+func (data *GraphData) IsLaterHalf(i int) bool {
 	return i > int(data.Width)/2
 }
 
@@ -180,9 +178,11 @@ func FormatBytes(b float64) string {
 	return humanize.Bytes(uint64(b))
 }
 
-// FormatPercentage plugs into PtString to format the float as a percentage.
-func FormatPercentage(f float64) string {
-	return fmt.Sprintf("%.3g%%", f)
+// FormatPercentage plugs into PtString to format the float as a percentage. typ
+// should be either 'g' or 'f'.
+func FormatPercentage(dec int, typ byte) func(float64) string {
+	f := "%." + strconv.Itoa(dec) + string(typ) + "%%"
+	return func(v float64) string { return fmt.Sprintf(f, v) }
 }
 
 // NaN is a float64 not-a-number constant.
@@ -197,16 +197,16 @@ type graphData struct {
 	Error error
 }
 
-func prepareGraph(data GraphData) graphData {
-	if len(data.Samples) == 0 {
-		return graphData{data, nil}
+func prepareGraph(data GraphData) *graphData {
+	if len(data.Samplesets) == 0 {
+		return &graphData{data, nil}
 	}
 
 	// Ensure that all samples are of equal lengths.
-	firstLen := len(data.Samples[0])
-	for i, samples := range data.Samples[1:] {
+	firstLen := len(data.Samplesets[0])
+	for i, samples := range data.Samplesets[1:] {
 		if len(samples) != firstLen {
-			return graphData{data, fmt.Errorf(
+			return &graphData{data, fmt.Errorf(
 				"mismatch len %d (first) != %d (%d)",
 				firstLen, len(samples), i,
 			)}
@@ -214,7 +214,7 @@ func prepareGraph(data GraphData) graphData {
 	}
 
 	if data.Width == 0 {
-		for _, samples := range data.Samples {
+		for _, samples := range data.Samplesets {
 			if w := float64(len(samples)); w > data.Width {
 				data.Width = w
 			}
@@ -224,7 +224,7 @@ func prepareGraph(data GraphData) graphData {
 	if math.IsNaN(data.MinSample) || math.IsNaN(data.MaxSample) {
 		// Search across all samplesets for the absolute maximum and minimum
 		// across all of them.
-		for _, samples := range data.Samples {
+		for _, samples := range data.Samplesets {
 			for _, x := range samples {
 				if math.IsNaN(data.MinSample) || x < data.MinSample {
 					data.MinSample = x
@@ -236,13 +236,31 @@ func prepareGraph(data GraphData) graphData {
 		}
 	}
 
-	return graphData{data, nil}
+	return &graphData{data, nil}
 }
 
-func path(data graphData, samples []float64) template.HTMLAttr {
-	paths := strings.Builder{}
-	paths.Grow(4096) // 4KB
+func drawPaths(data *graphData) template.HTML {
+	html := strings.Builder{}
+	html.Grow(8 * 1024) // 8KB
 
+	for i := len(data.Samplesets) - 1; i >= 0; i-- {
+		html.WriteString(`<path class="sample-`)
+		html.WriteString(strconv.Itoa(i))
+		html.WriteString(`" `)
+
+		html.WriteString(`stroke="`)
+		html.WriteString(string(data.ColorHex(i)))
+		html.WriteString(`" `)
+
+		html.WriteString(`d="`)
+		pathD(&html, data, data.Samplesets[i])
+		html.WriteString(`" />`)
+	}
+
+	return template.HTML(html.String())
+}
+
+func pathD(paths *strings.Builder, data *graphData, samples []float64) {
 	width := data.Width
 	height := data.Height
 
@@ -286,8 +304,12 @@ func path(data graphData, samples []float64) template.HTMLAttr {
 		}
 
 		prev = v
-		fmt.Fprintf(&paths, "%c%.4f %.4f ", cmd, x, (1-y)*height)
-	}
 
-	return template.HTMLAttr(paths.String())
+		// Code unwrapped from "%c%.5f %.5f ".
+		paths.WriteRune(cmd)
+		paths.WriteString(strconv.FormatFloat(x, 'f', 5, 64))
+		paths.WriteByte(' ')
+		paths.WriteString(strconv.FormatFloat((1-y)*height, 'f', 5, 64))
+		paths.WriteByte(' ')
+	}
 }

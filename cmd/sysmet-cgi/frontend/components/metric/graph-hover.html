@@ -1,0 +1,27 @@
+{{ define "graph-hover" }}
+<div class="graph-hover">
+	{{ if . }}
+	<div class="graph-body">
+		<div class="graph-text">
+			<time datetime="{{ .Timestamp }}">
+				{{ .Timestamp }} ({{ .RelativeTime }})
+			</time>
+			<div class="graph-table">
+				{{ range $_, $i := .HoverRows }}
+				<span
+					class="line-sample-{{ $i }}"
+					style="color: {{ .Color }}"
+				>‒</span>
+				<span class="key-sample-{{ $i }}">
+					{{ .Name }}
+				</span>
+				<span class="value-sample-{{ $i }}">
+					{{ .Value }}
+				</span>
+				{{ end }}
+			</div>
+		</div>
+	</div>
+	{{ end }}
+</div>
+{{ end }}

@@ -23,8 +23,7 @@ var bucketName = []byte("sysmet-v1")
 // database. This may happen when the database has never been updated before.
 var ErrUninitialized = errors.New("bucket not initialized")
 
-// Snapshot describes a single snapshot of data written. It implements
-// sort.Interface.
+// Snapshot describes a single snapshot of data.
 type Snapshot struct {
 	CPUs      []cpu.TimesStat
 	Memory    mem.VirtualMemoryStat
@@ -67,27 +66,6 @@ func PrepareMetrics() (Snapshot, error) {
 
 	return snapshot, nil
 }
-
-func diskUsages() ([]disk.UsageStat, error) {
-	pstat, err := disk.Partitions(false)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to get all partitions")
-	}
-
-	ustat := make([]disk.UsageStat, 0, len(pstat))
-	for _, p := range pstat {
-		u, err := disk.Usage(p.Mountpoint)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to get usage for mount %q", p.Mountpoint)
-		}
-		ustat = append(ustat, *u)
-	}
-
-	return ustat, nil
-}
-
-// TTL is the time-to-live for all keys.
-var TTL = 365 * 24 * time.Hour
 
 // Database describes a wrapped database instance.
 type Database struct {

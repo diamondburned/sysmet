@@ -21,9 +21,6 @@ var webFS embed.FS
 var Templater = tmplutil.Templater{
 	FileSystem: webFS,
 	Includes: map[string]string{
-		"logo":   "components/logo/logo.html",
-		"metric": "components/metric/graph.html",
-		"errbox": "components/errbox/errbox.html",
 		"rawcss": "static/index.css",
 	},
 	Functions: template.FuncMap{},
@@ -31,6 +28,7 @@ var Templater = tmplutil.Templater{
 
 func init() {
 	// tmplutil.Log = true
+	tmplutil.Preregister(&Templater)
 }
 
 // MountStatic mounts a static HTTP handler.

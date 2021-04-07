@@ -133,7 +133,7 @@ var graphFlatteners = map[string]graphFlattenFunc{
 	"CPU Usage": func(buckets sysmet.SnapshotBuckets) metric.GraphData {
 		graphData := metric.NewGraphData(buckets, GraphHeight, "Usage")
 		graphData.Colors = []uint32{0xEAB839}
-		graphData.PtString = metric.FormatPercentage
+		graphData.PtString = metric.FormatPercentage(2, 'g')
 
 		// Magic formulas taken from
 		// https://github.com/influxdata/telegraf/blob/master/plugins/inputs/cpu/cpu.go#L108
@@ -148,7 +148,7 @@ var graphFlatteners = map[string]graphFlattenFunc{
 
 			// NaN is NOT larger than NaN.
 			if lastActive > active && lastTotal > total {
-				graphData.Samples[0][i] = (lastActive - active) / (lastTotal - total) * 100
+				graphData.Samplesets[0][i] = (lastActive - active) / (lastTotal - total) * 100
 			}
 
 			lastActive, lastTotal = active, total
@@ -167,7 +167,7 @@ var graphFlatteners = map[string]graphFlattenFunc{
 			graphData.Names[1] += fmt.Sprintf("\t(total %s)", humanize.Bytes(last.Swap.Total))
 		}
 
-		fillMaxs(buckets, graphData.Samples, []snapshotAccessFunc{
+		fillMaxs(buckets, graphData.Samplesets, []snapshotAccessFunc{
 			func(s sysmet.Snapshot) float64 { return float64(s.Memory.Used) },
 			func(s sysmet.Snapshot) float64 { return float64(s.Swap.Used) },
 		})
@@ -180,7 +180,7 @@ var graphFlatteners = map[string]graphFlattenFunc{
 		graphData.Colors = []uint32{0x8AC3FF, 0x459AEA, 0x0071D5} // light to dark shades of blue
 		graphData.PtString = metric.FormatSigFigs(3)
 
-		fillMaxs(buckets, graphData.Samples, []snapshotAccessFunc{
+		fillMaxs(buckets, graphData.Samplesets, []snapshotAccessFunc{
 			func(s sysmet.Snapshot) float64 { return s.LoadAvgs.Load1 },
 			func(s sysmet.Snapshot) float64 { return s.LoadAvgs.Load5 },
 			func(s sysmet.Snapshot) float64 { return s.LoadAvgs.Load15 },
@@ -213,8 +213,8 @@ var graphFlatteners = map[string]graphFlattenFunc{
 			currSent, currRecv := sumNetworks(buckets.Buckets[i])
 
 			if lastSent > currSent && lastRecv > currRecv {
-				graphData.Samples[0][i] = lastSent - currSent
-				graphData.Samples[1][i] = lastRecv - currRecv
+				graphData.Samplesets[0][i] = lastSent - currSent
+				graphData.Samplesets[1][i] = lastRecv - currRecv
 			}
 
 			lastSent, lastRecv = currSent, currRecv
@@ -224,7 +224,7 @@ var graphFlatteners = map[string]graphFlattenFunc{
 	},
 	"Disks": func(buckets sysmet.SnapshotBuckets) metric.GraphData {
 		graphData := metric.NewGraphData(buckets, GraphHeight)
-		graphData.PtString = metric.FormatDecimalPlaces(0)
+		graphData.PtString = metric.FormatPercentage(0, 'f')
 		graphData.MaxSample = 100
 		graphData.Colors = []uint32{
 			// https://colorswall.com/palette/102/
@@ -252,7 +252,7 @@ var graphFlatteners = map[string]graphFlattenFunc{
 						dataIx = graphData.AddSamples(disk.Path, len(buckets.Buckets))
 					}
 
-					graphData.Samples[dataIx][i] = disk.UsedPercent
+					graphData.Samplesets[dataIx][i] = disk.UsedPercent
 				}
 			}
 		}

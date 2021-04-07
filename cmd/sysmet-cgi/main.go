@@ -16,6 +16,9 @@ import (
 	"github.com/diamondburned/tmplutil"
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
+	"github.com/tdewolff/minify/v2"
+	"github.com/tdewolff/minify/v2/css"
+	"github.com/tdewolff/minify/v2/html"
 	"maze.io/x/duration"
 )
 
@@ -53,6 +56,13 @@ type jsonError struct {
 	Error string
 }
 
+var minifier = minify.New()
+
+func init() {
+	minifier.Add("text/html", html.DefaultMinifier)
+	minifier.AddFunc("text/css", css.Minify)
+}
+
 func root(w http.ResponseWriter, r *http.Request) {
 	dura, err := parseDuration(r)
 
@@ -79,6 +89,9 @@ func root(w http.ResponseWriter, r *http.Request) {
 				errpage.Respond(w, 400, err)
 				return
 			}
+
+			w := minifier.Writer("text/html", w)
+			defer w.Close()
 
 			index.Render(w, r, dbPath, dura)
 			return
