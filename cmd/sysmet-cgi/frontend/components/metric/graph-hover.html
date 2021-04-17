@@ -8,14 +8,11 @@
 			</time>
 			<div class="graph-table">
 				{{ range $_, $i := .HoverRows }}
-				<span
-					class="line-sample-{{ $i }}"
-					style="color: {{ .Color }}"
-				>‒</span>
-				<span class="key-sample-{{ $i }}">
+				<span class="line" style="color: {{ .Color }}">‒</span>
+				<span class="key">
 					{{ .Name }}
 				</span>
-				<span class="value-sample-{{ $i }}">
+				<span class="value">
 					{{ .Value }}
 				</span>
 				{{ end }}

@@ -145,13 +145,13 @@ pre {
 	display: grid;
 	grid-template-columns: auto 1fr 1fr;
 }
-.graph-table > [class^="line"] {
+.graph-table > .line {
 	font-weight: 1000;
 }
-.graph-table > [class^="key"],
-.graph-table > [class^="value"] {
+.graph-table > .key,
+.graph-table > .value {
 	margin-left: 0.25em;
 }
-.graph-table > [class^="value"] {
+.graph-table > .value {
 	text-align: right;
 }

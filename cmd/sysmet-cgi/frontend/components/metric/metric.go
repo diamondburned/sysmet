@@ -13,6 +13,7 @@ import (
 	"git.unix.lgbt/diamondburned/sysmet"
 	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-cgi/frontend"
 	"github.com/dustin/go-humanize"
+	"github.com/montanaflynn/stats"
 )
 
 func init() {
@@ -260,6 +261,31 @@ func drawPaths(data *graphData) template.HTML {
 	return template.HTML(html.String())
 }
 
+func gapThreshold(samples []float64) int {
+	// Calculate the frequencies of all gaps.
+	gaps := make([]float64, 1, len(samples))
+
+	for i := len(samples) - 1; i >= 0; i-- {
+		if math.IsNaN(samples[i]) {
+			gaps[len(gaps)-1]++
+			continue
+		}
+
+		if gaps[len(gaps)-1] > 0 {
+			gaps = append(gaps, 0)
+		}
+	}
+
+	// Calculate the moving average of spike frequencies to derive a threshold
+	// to which we should determine a data is gapped.
+	// Algorithm ported from https://stats.stackexchange.com/a/56744.
+	gapMean, _ := stats.Mean(gaps)
+	gapStdDev, _ := stats.StandardDeviation(gaps)
+	gapThreshold := int(math.Round(gapMean + gapStdDev*2))
+
+	return gapThreshold
+}
+
 func pathD(paths *strings.Builder, data *graphData, samples []float64) {
 	width := data.Width
 	height := data.Height
@@ -267,8 +293,13 @@ func pathD(paths *strings.Builder, data *graphData, samples []float64) {
 	offset := data.MaxSample - data.MinSample
 	length := float64(len(samples))
 
-	var x, y float64
-	var prev = AutoValue // last non-null
+	x := 0.0
+	y := 0.0
+	prev := NaN // last non-null
+	gapX := 0
+	gapThreshold := gapThreshold(samples)
+
+	// TODO: ensure we have points drawn at start and end. End may have 0.
 
 	for i := len(samples) - 1; i >= 0; i-- {
 		v := samples[i]
@@ -280,9 +311,11 @@ func pathD(paths *strings.Builder, data *graphData, samples []float64) {
 			}
 
 			// Use the previous point if we have any. Otherwise, draw a gap.
-			if !math.IsNaN(prev) {
+			if !math.IsNaN(prev) && gapX < gapThreshold {
 				v = prev
+				gapX++
 			} else {
+				gapX = 0
 				continue
 			}
 		}
