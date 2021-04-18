@@ -271,9 +271,7 @@ func gapThreshold(samples []float64) int {
 			continue
 		}
 
-		if gaps[len(gaps)-1] > 0 {
-			gaps = append(gaps, 0)
-		}
+		gaps = append(gaps, 0)
 	}
 
 	// Calculate the moving average of spike frequencies to derive a threshold
@@ -316,6 +314,7 @@ func pathD(paths *strings.Builder, data *graphData, samples []float64) {
 				gapX++
 			} else {
 				gapX = 0
+				prev = NaN
 				continue
 			}
 		}
