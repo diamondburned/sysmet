@@ -1,0 +1,14 @@
+{
+    "kind": "pipeline",
+    "type": "docker",
+    "name": "default",
+    "steps": [
+        {
+            "name": "test",
+            "image": "golang:alpine",
+            "commands": [
+                "go test ./..."
+            ]
+        }
+    ]
+}
