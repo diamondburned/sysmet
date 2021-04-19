@@ -13,14 +13,17 @@ import (
 type testedDatabase struct {
 	Database
 	start uint32
+	gc    bool
 }
 
 // prepDB prepares a database with 20 datapoints over the span of a second. The
 // host stats' ctxt is used as the index.
-func prepDB(t *testing.T) *testedDatabase {
+func prepDB(t *testing.T, snapshots []Snapshot, now uint32) *testedDatabase {
 	t.Helper()
 
-	snapshots, now := gatherMetrics(t, 20)
+	if snapshots == nil {
+		snapshots = gatherMetrics(t, 20, now)
+	}
 
 	tmpDir := os.TempDir()
 	f, err := os.CreateTemp(tmpDir, "sysmet-test-")
@@ -57,7 +60,11 @@ func prepDB(t *testing.T) *testedDatabase {
 	})
 
 	t.Cleanup(func() {
-		if err := db.gc(db.start+20, 10); err != nil {
+		if !db.gc {
+			return
+		}
+
+		if err := db.Database.gc(db.start+20, 10); err != nil {
 			t.Fatal("failed to gc:", err)
 		}
 
@@ -75,18 +82,13 @@ func prepDB(t *testing.T) *testedDatabase {
 	return &db
 }
 
-func gatherMetrics(t *testing.T, n uint32) ([]Snapshot, uint32) {
+func gatherMetrics(t *testing.T, n, now uint32) []Snapshot {
 	t.Helper()
 
 	snapshots := make([]Snapshot, n)
-	now := uint32(time.Now().Unix())
 
 	for i := uint32(1); i <= n; i++ {
-		snapshots[i-1] = Snapshot{
-			// Mock a timestamp.
-			Time:      now + i,
-			HostStats: load.MiscStat{Ctxt: int(i)},
-		}
+		snapshots[i-1] = newFakeSnapshot(now, i)
 	}
 
 	// Shuffle the slice and ensure integrity.
@@ -95,33 +97,57 @@ func gatherMetrics(t *testing.T, n uint32) ([]Snapshot, uint32) {
 		snapshots[i], snapshots[j] = snapshots[j], snapshots[i]
 	})
 
-	return snapshots, now
+	return snapshots
+}
+
+func newFakeSnapshot(start, i uint32) Snapshot {
+	return Snapshot{
+		// Mock a timestamp.
+		Time:      start + i,
+		HostStats: load.MiscStat{Ctxt: int(i)},
+	}
+}
+
+func ixSlice(buckets []SnapshotBucket) [][]int {
+	ints := make([][]int, len(buckets))
+
+	for i, bucket := range buckets {
+		ints[i] = make([]int, len(bucket.Snapshots))
+
+		for j := range ints[i] {
+			ints[i][j] = bucket.Snapshots[j].HostStats.Ctxt
+		}
+	}
+
+	return ints
 }
 
 // TestReadExact tests exact bucket reads.
 func TestReadExact(t *testing.T) {
-	db := prepDB(t)
+	start := uint32(time.Now().Unix())
 
 	type test struct {
+		input   []Snapshot
 		name    string
 		opts    IteratorOpts
 		prec    time.Duration
+		fill    bool
 		expects [][]int
 	}
 
 	var tests = []test{{
 		name: "outside",
 		opts: IteratorOpts{
-			From: time.Unix(int64(db.start+110), 0),
-			To:   time.Unix(int64(db.start+100), 0),
+			From: time.Unix(int64(start+110), 0),
+			To:   time.Unix(int64(start+100), 0),
 		},
 		prec:    5 * time.Second,
 		expects: [][]int{{}, {}},
 	}, {
 		name: "too_sparse",
 		opts: IteratorOpts{
-			From: time.Unix(int64(db.start+20), 0),
-			To:   time.Unix(int64(db.start), 0),
+			From: time.Unix(int64(start+20), 0),
+			To:   time.Unix(int64(start), 0),
 		},
 		prec: 20 * time.Second,
 		expects: [][]int{
@@ -133,8 +159,8 @@ func TestReadExact(t *testing.T) {
 	}, {
 		name: "sparse_normal",
 		opts: IteratorOpts{
-			From: time.Unix(int64(db.start+20), 0),
-			To:   time.Unix(int64(db.start), 0),
+			From: time.Unix(int64(start+20), 0),
+			To:   time.Unix(int64(start), 0),
 		},
 		prec: 5 * time.Second,
 		expects: [][]int{
@@ -146,8 +172,8 @@ func TestReadExact(t *testing.T) {
 	}, {
 		name: "sparse_small",
 		opts: IteratorOpts{
-			From: time.Unix(int64(db.start+15), 0),
-			To:   time.Unix(int64(db.start+5), 0),
+			From: time.Unix(int64(start+15), 0),
+			To:   time.Unix(int64(start+5), 0),
 		},
 		prec: 5 * time.Second,
 		expects: [][]int{
@@ -157,8 +183,8 @@ func TestReadExact(t *testing.T) {
 	}, {
 		name: "sparse_overbound",
 		opts: IteratorOpts{
-			From: time.Unix(int64(db.start+30), 0),
-			To:   time.Unix(int64(db.start-10), 0),
+			From: time.Unix(int64(start+30), 0),
+			To:   time.Unix(int64(start-10), 0),
 		},
 		prec: 5 * time.Second,
 		expects: [][]int{
@@ -174,8 +200,8 @@ func TestReadExact(t *testing.T) {
 	}, {
 		name: "dense_normal",
 		opts: IteratorOpts{
-			From: time.Unix(int64(db.start+20), 0),
-			To:   time.Unix(int64(db.start), 0),
+			From: time.Unix(int64(start+20), 0),
+			To:   time.Unix(int64(start), 0),
 		},
 		prec: time.Second,
 		expects: [][]int{
@@ -187,8 +213,8 @@ func TestReadExact(t *testing.T) {
 	}, {
 		name: "dense_overbound",
 		opts: IteratorOpts{
-			From: time.Unix(int64(db.start+30), 0),
-			To:   time.Unix(int64(db.start-10), 0),
+			From: time.Unix(int64(start+30), 0),
+			To:   time.Unix(int64(start-10), 0),
 		},
 		prec: time.Second,
 		expects: [][]int{
@@ -204,8 +230,8 @@ func TestReadExact(t *testing.T) {
 	}, {
 		name: "subsecond",
 		opts: IteratorOpts{
-			From: time.Unix(int64(db.start+20), 0),
-			To:   time.Unix(int64(db.start+15), 0),
+			From: time.Unix(int64(start+20), 0),
+			To:   time.Unix(int64(start+15), 0),
 		},
 		prec: 500 * time.Millisecond,
 		expects: [][]int{
@@ -215,10 +241,41 @@ func TestReadExact(t *testing.T) {
 			{}, {19},
 			{}, {20},
 		},
+	}, {
+		name: "gapped",
+		opts: IteratorOpts{
+			From: time.Unix(int64(start+15), 0),
+			To:   time.Unix(int64(start), 0),
+		},
+		prec: 3 * time.Second / 2,
+		fill: true,
+		input: []Snapshot{
+			newFakeSnapshot(start, 0),
+			newFakeSnapshot(start, 1),
+			newFakeSnapshot(start, 2), //  gap [3, 8], unfilled
+			newFakeSnapshot(start, 9),
+			newFakeSnapshot(start, 10), // gap [11, 12], filled
+			newFakeSnapshot(start, 13),
+			newFakeSnapshot(start, 14),
+			newFakeSnapshot(start, 15),
+		},
+		expects: [][]int{
+			{1},
+			{2},
+			{}, {}, {},
+			{9},
+			{10},
+			{13}, // 11, 12
+			{13},
+			{14, 15},
+		},
 	}}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			db := prepDB(t, test.input, start)
+			db.gc = false
+
 			r, err := db.Iterator(test.opts)
 			if err != nil {
 				t.Fatal("failed to create reader:", err)
@@ -228,17 +285,28 @@ func TestReadExact(t *testing.T) {
 			buckets := r.ReadExact(test.prec)
 			expects := test.expects
 
+			if test.fill {
+				buckets.Fill()
+			}
+
 			if len(buckets.Buckets) != len(expects) {
-				t.Fatalf("expected %d buckets, got %d", len(expects), len(buckets.Buckets))
+				t.Fatalf("unexpected buckets:\n"+
+					"expected %02d: %v\n"+
+					"got      %02d: %v",
+					len(expects), expects, len(buckets.Buckets), ixSlice(buckets.Buckets),
+				)
 			}
 
 			for i, bucket := range buckets.Buckets {
 				expectsSnapshots := expects[i]
 
 				if len(bucket.Snapshots) != len(expectsSnapshots) {
-					t.Errorf(
-						"bucket %d expected %d snapshots, got %d",
-						i, len(expectsSnapshots), len(bucket.Snapshots),
+					t.Errorf("unexpected snapshots in bucket %d:\n"+
+						"expected %02d: %v\n"+
+						"got      %02d: %v\n",
+						i,
+						len(expectsSnapshots), expectsSnapshots,
+						len(bucket.Snapshots), bucket.Snapshots,
 					)
 					continue
 				}
@@ -257,7 +325,8 @@ func TestReadExact(t *testing.T) {
 }
 
 func TestReadAll(t *testing.T) {
-	db := prepDB(t)
+	start := uint32(time.Now().Unix())
+	db := prepDB(t, nil, start)
 
 	type test struct {
 		name         string
@@ -268,8 +337,8 @@ func TestReadAll(t *testing.T) {
 	var tests = []test{{
 		name: "small",
 		opts: IteratorOpts{
-			From: time.Unix(int64(db.start+18), 0),
-			To:   time.Unix(int64(db.start+10), 0),
+			From: time.Unix(int64(start+18), 0),
+			To:   time.Unix(int64(start+10), 0),
 		},
 		expectsRange: [2]int{10, 18},
 	}, {
@@ -279,8 +348,8 @@ func TestReadAll(t *testing.T) {
 	}, {
 		name: "overbound",
 		opts: IteratorOpts{
-			From: time.Unix(int64(db.start+30), 0),
-			To:   time.Unix(int64(db.start-10), 0),
+			From: time.Unix(int64(start+30), 0),
+			To:   time.Unix(int64(start-10), 0),
 		},
 		expectsRange: [2]int{1, 20},
 	}}
@@ -316,36 +385,3 @@ func TestReadAll(t *testing.T) {
 		})
 	}
 }
-
-// // TestFramed tests for a small frame of snapshots.
-// func TestFramed(t *testing.T) {
-// 	db := prepDB(t)
-
-// 	r, err := db.Read(ReadOpts{
-// 		// Go backwards from the last 10s to the last 2s with 2s accuracy. With
-// 		// 20 points for 20 seconds, 1 each, this should give us 4 points.
-// 		Start:     time.Unix(int64(db.start), 0).Add(10 * time.Second),
-// 		End:       time.Unix(int64(db.start), 0).Add(18 * time.Second),
-// 		Precision: 2 * time.Second,
-// 	})
-// 	if err != nil {
-// 		t.Fatal("failed to create reader:", err)
-// 	}
-// 	defer r.Close()
-
-// 	snapshots := r.ReadAll()
-// 	expects := []int{10, 12, 14, 16, 18}
-
-// 	if len(snapshots) != len(expects) {
-// 		t.Fatalf("expected %d snapshots, got %d", len(expects), len(snapshots))
-// 	}
-
-// 	for i, snapshot := range snapshots {
-// 		if snapshot.Time == 0 {
-// 			t.Error("missing snapshot time", snapshot.Time)
-// 		}
-// 		if snapshot.HostStats.Ctxt != expects[i] {
-// 			t.Errorf("snapshot %d expected %d, has %d", i, expects[i], snapshot.HostStats.Ctxt)
-// 		}
-// 	}
-// }

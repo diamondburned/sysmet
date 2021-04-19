@@ -2,8 +2,10 @@ package sysmet
 
 import (
 	"encoding/json"
+	"math"
 	"time"
 
+	"github.com/montanaflynn/stats"
 	"github.com/pkg/errors"
 	"go.etcd.io/bbolt"
 )
@@ -165,20 +167,6 @@ func (i *Iterator) ReadAll() []Snapshot {
 	return i.ReadRemaining()
 }
 
-// SnapshotBucket contains a bucket of snapshot timeframes. It is used by
-// ReadExact to allow the caller to manually calculate the averages.
-type SnapshotBucket struct {
-	Snapshots []Snapshot `json:"snapshots"`
-}
-
-// SnapshotBuckets contains all snapshots as well as buckets of those snapshots
-// over the given time.
-type SnapshotBuckets struct {
-	Range     BucketRange      `json:"range"`
-	Snapshots []Snapshot       `json:"-"`
-	Buckets   []SnapshotBucket `json:"buckets"`
-}
-
 // BucketRange describes the range of snapshot buckets.
 type BucketRange struct {
 	// From is always after To.
@@ -198,6 +186,7 @@ func (i *Iterator) ReadExact(precision time.Duration) SnapshotBuckets {
 
 	from := float64(i.from)
 	prec := float64(precision) / float64(time.Second)
+	blen := int(math.Ceil(float64(i.from-i.to) / prec))
 
 	buckets := SnapshotBuckets{
 		Range: BucketRange{
@@ -206,7 +195,7 @@ func (i *Iterator) ReadExact(precision time.Duration) SnapshotBuckets {
 			Prec: precision,
 		},
 		Snapshots: i.ReadAll(),
-		Buckets:   make([]SnapshotBucket, int(float64(i.from-i.to)/prec)),
+		Buckets:   make([]SnapshotBucket, blen),
 	}
 
 	// Exit if we have no snapshots.
@@ -265,4 +254,84 @@ func (i *Iterator) ReadExact(precision time.Duration) SnapshotBuckets {
 	}
 
 	return buckets
+}
+
+// SnapshotBucket contains a bucket of snapshot timeframes. It is used by
+// ReadExact to allow the caller to manually calculate the averages.
+type SnapshotBucket struct {
+	Snapshots []Snapshot `json:"snapshots"`
+}
+
+// SnapshotBuckets contains all snapshots as well as buckets of those snapshots
+// over the given time.
+type SnapshotBuckets struct {
+	Range     BucketRange      `json:"range"`
+	Snapshots []Snapshot       `json:"-"`
+	Buckets   []SnapshotBucket `json:"buckets"`
+}
+
+// FillGaps fills the buckets with the given multiplier for determine the
+// threshold. A good gapMult value is 1.
+func (buckets *SnapshotBuckets) FillGaps(gapMult float64) {
+	threshold := buckets.GapThreshold(gapMult)
+	gapStart := -1
+	gapX := 0
+
+	var prev []Snapshot
+
+	for i := len(buckets.Buckets) - 1; i >= 0; i-- {
+		snapshots := buckets.Buckets[i].Snapshots
+		if len(snapshots) > 0 {
+			gapX = 0
+			prev = snapshots
+			continue
+		}
+
+		// If we have a previous snapshot and we're not yet over the threshold.
+		if len(prev) > 0 && gapX < threshold {
+			if gapX == 0 {
+				gapStart = i
+			}
+
+			buckets.Buckets[i].Snapshots = prev
+			gapX++
+			continue
+		}
+
+		if gapX >= threshold {
+			// Yielded over the threshold. Try to undo the gaps.
+			for j := gapStart; j > i; j-- {
+				buckets.Buckets[j].Snapshots = nil
+			}
+		}
+
+		gapX = 0
+		prev = nil
+	}
+}
+
+// GapThreshold returns the threshold that determine a gap after n empty
+// buckets. Mult determines the multiplier from the standard derivation that
+// should determine the threshold for gaps.
+func (buckets SnapshotBuckets) GapThreshold(mult float64) int {
+	// Calculate the frequencies of all gaps.
+	gaps := make([]float64, 1, len(buckets.Buckets))
+
+	for i := len(buckets.Buckets) - 1; i >= 0; i-- {
+		if len(buckets.Buckets[i].Snapshots) == 0 {
+			gaps[len(gaps)-1]++
+			continue
+		}
+
+		gaps = append(gaps, 0)
+	}
+
+	// Calculate the moving average of spike frequencies to derive a threshold
+	// to which we should determine a data is gapped.
+	// Algorithm ported from https://stats.stackexchange.com/a/56744.
+	gapMean, _ := stats.Mean(gaps)
+	gapStdDev, _ := stats.StandardDeviation(gaps)
+	gapThreshold := int(math.Round(gapMean + gapStdDev*mult))
+
+	return gapThreshold
 }

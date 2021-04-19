@@ -2,6 +2,7 @@ package index
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"git.unix.lgbt/diamondburned/sysmet"
@@ -12,22 +13,25 @@ import (
 
 // ignoredNetworks contains the list of ignored network devices. By default, the
 // loopback device is ignored.
-var ignoredNetworks = map[string]struct{}{
-	"lo": {},
+var ignoredNetworks = []string{
+	"lo",
 }
 
 // IgnoreNetwork ignores a network device. This function is not thread-safe; it
 // should only be called on init or main.
 func IgnoreNetwork(dev string) {
-	ignoredNetworks[dev] = struct{}{}
+	ignoredNetworks = append(ignoredNetworks, dev)
 }
 
 // sumNetworks sums up all network devices' sent and received byte counters.
 func sumNetworks(bucket sysmet.SnapshotBucket) (sent, recv float64) {
 	for _, snapshot := range bucket.Snapshots {
+	networkLoop:
 		for _, dev := range snapshot.Network {
-			if _, ignore := ignoredNetworks[dev.Name]; ignore {
-				continue
+			for _, ignored := range ignoredNetworks {
+				if ignored == dev.Name {
+					continue networkLoop
+				}
 			}
 
 			if f := float64(dev.BytesSent); f > sent {
@@ -243,13 +247,19 @@ var graphFlatteners = map[string]graphFlattenFunc{
 					// Ensure the disk is inside metric.GraphData.
 					var dataIx = -1
 					for j, name := range graphData.Names {
-						if name == disk.Path {
+						// Awful hack. Truly awful hack.
+						if strings.HasPrefix(name, disk.Path+"\t") {
 							dataIx = j
 							break
 						}
 					}
+
 					if dataIx == -1 {
-						dataIx = graphData.AddSamples(disk.Path, len(buckets.Buckets))
+						name := fmt.Sprintf(
+							"%s\t(total %s)",
+							disk.Path, humanize.Bytes(disk.Total),
+						)
+						dataIx = graphData.AddSamples(name, len(buckets.Buckets))
 					}
 
 					graphData.Samplesets[dataIx][i] = disk.UsedPercent

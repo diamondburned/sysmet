@@ -68,7 +68,10 @@ func ReadSnapshots(path string, dura time.Duration) (sysmet.SnapshotBuckets, err
 	}
 	defer iter.Close()
 
-	return iter.ReadExact(dura / PointsPerGraph), nil
+	buckets := iter.ReadExact(dura / PointsPerGraph)
+	buckets.FillGaps(2.0)
+
+	return buckets, nil
 }
 
 // WriteJSON writes snapshots as JSON. Errors are logged into stderr.

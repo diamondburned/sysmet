@@ -13,7 +13,6 @@ import (
 	"git.unix.lgbt/diamondburned/sysmet"
 	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-cgi/frontend"
 	"github.com/dustin/go-humanize"
-	"github.com/montanaflynn/stats"
 )
 
 func init() {
@@ -49,9 +48,6 @@ type GraphData struct {
 	// Height is the height of the graph. It determines the aspect ratio of the
 	// graph.
 	Height float64
-	// NullGap, if false, will connect all null (NaN) points to the right-handed
-	// previous point if it's not null.
-	NullGap bool
 }
 
 // NewGraphData creates a new graph data with reasonable defaults.
@@ -65,7 +61,6 @@ func NewGraphData(b sysmet.SnapshotBuckets, height int, names ...string) GraphDa
 		MinSample:  0,
 		Width:      float64(b.Range.From.Sub(b.Range.To) / b.Range.Prec),
 		Height:     float64(height),
-		NullGap:    false,
 	}
 }
 
@@ -261,29 +256,6 @@ func drawPaths(data *graphData) template.HTML {
 	return template.HTML(html.String())
 }
 
-func gapThreshold(samples []float64) int {
-	// Calculate the frequencies of all gaps.
-	gaps := make([]float64, 1, len(samples))
-
-	for i := len(samples) - 1; i >= 0; i-- {
-		if math.IsNaN(samples[i]) {
-			gaps[len(gaps)-1]++
-			continue
-		}
-
-		gaps = append(gaps, 0)
-	}
-
-	// Calculate the moving average of spike frequencies to derive a threshold
-	// to which we should determine a data is gapped.
-	// Algorithm ported from https://stats.stackexchange.com/a/56744.
-	gapMean, _ := stats.Mean(gaps)
-	gapStdDev, _ := stats.StandardDeviation(gaps)
-	gapThreshold := int(math.Round(gapMean + gapStdDev*2))
-
-	return gapThreshold
-}
-
 func pathD(paths *strings.Builder, data *graphData, samples []float64) {
 	width := data.Width
 	height := data.Height
@@ -293,9 +265,7 @@ func pathD(paths *strings.Builder, data *graphData, samples []float64) {
 
 	x := 0.0
 	y := 0.0
-	prev := NaN // last non-null
-	gapX := 0
-	gapThreshold := gapThreshold(samples)
+	prev := false
 
 	// TODO: ensure we have points drawn at start and end. End may have 0.
 
@@ -303,20 +273,8 @@ func pathD(paths *strings.Builder, data *graphData, samples []float64) {
 		v := samples[i]
 
 		if math.IsNaN(v) {
-			// Skip NaN samples (gap points) if NullGap is true.
-			if data.NullGap {
-				continue
-			}
-
-			// Use the previous point if we have any. Otherwise, draw a gap.
-			if !math.IsNaN(prev) && gapX < gapThreshold {
-				v = prev
-				gapX++
-			} else {
-				gapX = 0
-				prev = NaN
-				continue
-			}
+			prev = false
+			continue
 		}
 
 		x = float64(i+1) / length * width
@@ -327,15 +285,13 @@ func pathD(paths *strings.Builder, data *graphData, samples []float64) {
 		}
 
 		// If we're initially drawing the first point on the SVG, then Move to
-		// that point. Otherwise, draw a Line to that point. We know this by
-		// checking that prev is not NaN, because it is a valid value once we
-		// draw one.
+		// that point. Otherwise, draw a Line to that point.
 		var cmd = 'L'
-		if math.IsNaN(prev) {
+		if !prev {
 			cmd = 'M'
 		}
 
-		prev = v
+		prev = true
 
 		// Code unwrapped from "%c%.5f %.5f ".
 		paths.WriteRune(cmd)
