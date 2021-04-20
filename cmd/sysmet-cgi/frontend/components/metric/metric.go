@@ -171,7 +171,11 @@ func FormatSigFigs(sf int) func(float64) string {
 
 // FormatBytes plugs into PtString to format bytes as strings.
 func FormatBytes(b float64) string {
-	return humanize.Bytes(uint64(b))
+	s := humanize.Bytes(uint64(math.Abs(b)))
+	if math.Signbit(b) {
+		s = "-" + s
+	}
+	return s
 }
 
 // FormatPercentage plugs into PtString to format the float as a percentage. typ
@@ -260,8 +264,12 @@ func pathD(paths *strings.Builder, data *graphData, samples []float64) {
 	width := data.Width
 	height := data.Height
 
-	offset := data.MaxSample - data.MinSample
 	length := float64(len(samples))
+	offset := data.MaxSample - data.MinSample
+	if offset == 0 {
+		// ???
+		return
+	}
 
 	x := 0.0
 	y := 0.0
@@ -278,11 +286,7 @@ func pathD(paths *strings.Builder, data *graphData, samples []float64) {
 		}
 
 		x = float64(i+1) / length * width
-		y = v - data.MinSample
-
-		if offset != 0 {
-			y /= offset
-		}
+		y = (v - data.MinSample) / offset
 
 		// If we're initially drawing the first point on the SVG, then Move to
 		// that point. Otherwise, draw a Line to that point.

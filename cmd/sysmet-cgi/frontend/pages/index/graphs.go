@@ -2,7 +2,6 @@ package index
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"git.unix.lgbt/diamondburned/sysmet"
@@ -130,7 +129,7 @@ var graphFlattenNames = []string{
 	"RAM Usage",
 	"Load Average",
 	"Network",
-	"Disks",
+	"Disk Usage",
 }
 
 var graphFlatteners = map[string]graphFlattenFunc{
@@ -226,10 +225,11 @@ var graphFlatteners = map[string]graphFlattenFunc{
 
 		return data
 	},
-	"Disks": func(buckets sysmet.SnapshotBuckets) metric.GraphData {
+	"Disk Usage": func(buckets sysmet.SnapshotBuckets) metric.GraphData {
 		data := metric.NewGraphData(buckets, GraphHeight)
-		data.PtString = metric.FormatPercentage(0, 'f')
-		data.MaxSample = 100
+		data.MinSample = metric.AutoValue
+		data.MaxSample = metric.AutoValue
+		data.PtString = metric.FormatBytes
 		data.Colors = []uint32{
 			// https://colorswall.com/palette/102/
 			0xff0000,
@@ -241,28 +241,34 @@ var graphFlatteners = map[string]graphFlattenFunc{
 			0xee82ee,
 		}
 
+		type diskUsage struct {
+			ix  int
+			use float64
+		}
+
+		diskStates := map[string]diskUsage{}
+
 		for i := len(buckets.Buckets) - 1; i >= 0; i-- {
 			for _, snapshot := range buckets.Buckets[i].Snapshots {
 				for _, disk := range snapshot.Disks {
-					// Ensure the disk is inside metric.GraphData.
-					var dataIx = -1
-					for j, name := range data.Names {
-						// Awful hack. Truly awful hack.
-						if strings.HasPrefix(name, disk.Path+"\t") {
-							dataIx = j
-							break
+					used := float64(disk.Used)
+
+					usage, ok := diskStates[disk.Path]
+					if !ok {
+						name := fmt.Sprintf(
+							"%s\t(%s/%s)",
+							disk.Path, humanize.Bytes(disk.Used), humanize.Bytes(disk.Total),
+						)
+
+						usage = diskUsage{
+							ix:  data.AddSamples(name, len(buckets.Buckets)),
+							use: used,
 						}
 					}
 
-					if dataIx == -1 {
-						name := fmt.Sprintf(
-							"%s\t(total %s)",
-							disk.Path, humanize.Bytes(disk.Total),
-						)
-						dataIx = data.AddSamples(name, len(buckets.Buckets))
-					}
-
-					data.Samplesets[dataIx][i] = disk.UsedPercent
+					data.Samplesets[usage.ix][i] = usage.use - used
+					usage.use = used
+					diskStates[disk.Path] = usage
 				}
 			}
 		}
