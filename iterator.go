@@ -5,7 +5,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/montanaflynn/stats"
 	"github.com/pkg/errors"
 	"go.etcd.io/bbolt"
 )
@@ -18,7 +17,7 @@ type IteratorOpts struct {
 	From time.Time
 	// To is the time to stop reading the metrics backwards. By default, the
 	// zero-value is used, which would read all metrics. The To time must
-	// ALWAYS be before End.
+	// ALWAYS be before From.
 	To time.Time
 }
 
@@ -78,7 +77,9 @@ func (i *Iterator) step() {
 }
 
 // isValid returns true if the reader is still valid.
-func (i *Iterator) isValid() bool { return i.key != nil }
+func (i *Iterator) isValid() bool {
+	return i.key != nil && (i.to == 0 || i.to <= readUnixBE(i.key))
+}
 
 // Prev reads the previous item into the given snapshot pointer or the last item
 // if the Reader has never been used before. If snapshot is nil, then the
@@ -88,26 +89,10 @@ func (i *Iterator) isValid() bool { return i.key != nil }
 // is.
 func (i *Iterator) Prev(snapshot *Snapshot) bool {
 	for i.isValid() {
-		time := readUnixBE(i.key)
-
-		if i.to > 0 && i.to > time {
-			break
-		}
-
-		// Skip if the current time is ahead of what we want to read.
-		if i.from > 0 && i.from < time {
-			i.step()
-			continue
-		}
-
 		if snapshot != nil {
-			// Unmarshal fail is a fatal error, so we invalidate everything.
-			if err := json.Unmarshal(i.value, snapshot); err != nil {
+			if !i.readSnapshot(snapshot) {
 				break
 			}
-
-			// Update the timestamp.
-			snapshot.Time = time
 		}
 
 		// Seek for the next call.
@@ -121,6 +106,18 @@ func (i *Iterator) Prev(snapshot *Snapshot) bool {
 	i.value = nil
 
 	return false
+}
+
+func (i *Iterator) readSnapshot(snapshot *Snapshot) bool {
+	// Unmarshal fail is a fatal error, so we invalidate everything.
+	if err := json.Unmarshal(i.value, snapshot); err != nil {
+		return false
+	}
+
+	// Update the timestamp.
+	snapshot.Time = readUnixBE(i.key)
+
+	return true
 }
 
 // Remaining returns the number of remaining keys to read until either the
@@ -158,6 +155,13 @@ func (i *Iterator) ReadRemaining() []Snapshot {
 // Rewind resets the cursor back to the initial position.
 func (i *Iterator) Rewind() {
 	i.key, i.value = i.cs.Last()
+
+	// Skip if the current time is ahead of what we want to read.
+	if i.from > 0 {
+		for i.from < readUnixBE(i.key) {
+			i.step()
+		}
+	}
 }
 
 // ReadAll is similar to ReadRemaining, except the cursor is rewound to the
@@ -180,6 +184,17 @@ type BucketRange struct {
 // automatically be rewound back to the "from" position. The function returns a
 // zero-value if from or to was 0.
 func (i *Iterator) ReadExact(precision time.Duration) SnapshotBuckets {
+	return i.readExact(precision, false)
+}
+
+// ReadBucketEdges behaves similarly to ReadExact, except each bucket will only
+// have the latest point. This is great when data has to be read over a wide
+// range of time.
+func (i *Iterator) ReadBucketEdges(precision time.Duration) SnapshotBuckets {
+	return i.readExact(precision, true)
+}
+
+func (i *Iterator) readExact(precision time.Duration, last bool) SnapshotBuckets {
 	if i.from == 0 || i.to == 0 {
 		return SnapshotBuckets{}
 	}
@@ -194,8 +209,34 @@ func (i *Iterator) ReadExact(precision time.Duration) SnapshotBuckets {
 			To:   time.Unix(int64(i.to), 0),
 			Prec: precision,
 		},
-		Snapshots: i.ReadAll(),
-		Buckets:   make([]SnapshotBucket, blen),
+		Buckets: make([]SnapshotBucket, blen),
+	}
+
+	if !last {
+		buckets.Snapshots = i.ReadAll()
+	} else {
+		buckets.Snapshots = make([]Snapshot, blen)
+		prev := i.from // from == end, to == start
+		prec := uint32(prec)
+
+		for i.Rewind(); blen > 0 && i.isValid(); i.step() {
+			time := readUnixBE(i.key)
+			if time > prev {
+				continue
+			}
+
+			if !i.readSnapshot(&buckets.Snapshots[blen-1]) {
+				return SnapshotBuckets{}
+			}
+			blen--
+
+			prev -= prec
+			time -= prec
+			// Get the next tick from the current time, whichever is further.
+			if time < prev {
+				prev = time
+			}
+		}
 	}
 
 	// Exit if we have no snapshots.
@@ -236,7 +277,7 @@ func (i *Iterator) ReadExact(precision time.Duration) SnapshotBuckets {
 		bucketIx--
 	}
 
-	for snapshotIx >= 0 {
+	for snapshotIx >= 0 && bucketIx >= 0 {
 		snapshot := buckets.Snapshots[snapshotIx]
 
 		// Test if the snapshot is within the bucket.
@@ -271,9 +312,9 @@ type SnapshotBuckets struct {
 }
 
 // FillGaps fills the buckets with the given multiplier for determine the
-// threshold. A good gapMult value is 1.
-func (buckets *SnapshotBuckets) FillGaps(gapMult float64) {
-	threshold := buckets.GapThreshold(gapMult)
+// threshold. A good gapMult value is 0.10.
+func (buckets *SnapshotBuckets) FillGaps(gapPerc float64) {
+	threshold := buckets.GapThreshold(gapPerc)
 	gapStart := -1
 	gapX := 0
 
@@ -311,27 +352,39 @@ func (buckets *SnapshotBuckets) FillGaps(gapMult float64) {
 }
 
 // GapThreshold returns the threshold that determine a gap after n empty
-// buckets. Mult determines the multiplier from the standard derivation that
-// should determine the threshold for gaps.
-func (buckets SnapshotBuckets) GapThreshold(mult float64) int {
-	// Calculate the frequencies of all gaps.
-	gaps := make([]float64, 1, len(buckets.Buckets))
-
-	for i := len(buckets.Buckets) - 1; i >= 0; i-- {
-		if len(buckets.Buckets[i].Snapshots) == 0 {
-			gaps[len(gaps)-1]++
-			continue
-		}
-
-		gaps = append(gaps, 0)
-	}
-
-	// Calculate the moving average of spike frequencies to derive a threshold
-	// to which we should determine a data is gapped.
-	// Algorithm ported from https://stats.stackexchange.com/a/56744.
-	gapMean, _ := stats.Mean(gaps)
-	gapStdDev, _ := stats.StandardDeviation(gaps)
-	gapThreshold := int(math.Round(gapMean + gapStdDev*mult))
-
-	return gapThreshold
+// buckets. The given perc variable determines the percentage from 0 to 1 that
+// determines after how many empty buckets should be treated as a gap.
+func (buckets SnapshotBuckets) GapThreshold(perc float64) int {
+	return int(math.Ceil(float64(len(buckets.Buckets)) * perc))
 }
+
+// Below lies the magical mean/std-dev method.
+
+// func (buckets SnapshotBuckets) GapThreshold(mult float64) int {
+// 	if mult <= 1.0 {
+// 		return int(math.Ceil(float64(len(buckets.Buckets)) * mult))
+// 	}
+//
+// 	// Calculate the frequencies of all gaps.
+// 	gaps := make([]float64, 1, len(buckets.Buckets))
+//
+// 	for i := len(buckets.Buckets) - 1; i >= 0; i-- {
+// 		if len(buckets.Buckets[i].Snapshots) == 0 {
+// 			gaps[len(gaps)-1]++
+// 			continue
+// 		}
+//
+// 		if gaps[len(gaps)-1] != 0 {
+// 			gaps = append(gaps, 0)
+// 		}
+// 	}
+//
+// 	// Calculate the moving average of spike frequencies to derive a threshold
+// 	// to which we should determine a data is gapped.
+// 	// Algorithm ported from https://stats.stackexchange.com/a/56744.
+// 	gapMean, _ := stats.Mean(gaps)
+// 	gapStdDev, _ := stats.StandardDeviationSample(gaps)
+// 	gapThreshold := math.Ceil(gapMean + gapStdDev*mult)
+//
+// 	return int(gapThreshold)
+// }

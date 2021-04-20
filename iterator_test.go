@@ -108,15 +108,21 @@ func newFakeSnapshot(start, i uint32) Snapshot {
 	}
 }
 
-func ixSlice(buckets []SnapshotBucket) [][]int {
+func bucketIxs(buckets []SnapshotBucket) [][]int {
 	ints := make([][]int, len(buckets))
 
 	for i, bucket := range buckets {
-		ints[i] = make([]int, len(bucket.Snapshots))
+		ints[i] = snapshotIxs(bucket.Snapshots)
+	}
 
-		for j := range ints[i] {
-			ints[i][j] = bucket.Snapshots[j].HostStats.Ctxt
-		}
+	return ints
+}
+
+func snapshotIxs(snapshots []Snapshot) []int {
+	ints := make([]int, len(snapshots))
+
+	for i, snapshot := range snapshots {
+		ints[i] = snapshot.HostStats.Ctxt
 	}
 
 	return ints
@@ -132,6 +138,7 @@ func TestReadExact(t *testing.T) {
 		opts    IteratorOpts
 		prec    time.Duration
 		fill    bool
+		last    bool
 		expects [][]int
 	}
 
@@ -170,6 +177,20 @@ func TestReadExact(t *testing.T) {
 			{16, 17, 18, 19, 20},
 		},
 	}, {
+		name: "sparse_normal_last",
+		opts: IteratorOpts{
+			From: time.Unix(int64(start+20), 0),
+			To:   time.Unix(int64(start), 0),
+		},
+		prec: 5 * time.Second,
+		last: true,
+		expects: [][]int{
+			{5},
+			{10},
+			{15},
+			{20},
+		},
+	}, {
 		name: "sparse_small",
 		opts: IteratorOpts{
 			From: time.Unix(int64(start+15), 0),
@@ -179,6 +200,18 @@ func TestReadExact(t *testing.T) {
 		expects: [][]int{
 			{6, 7, 8, 9, 10},
 			{11, 12, 13, 14, 15},
+		},
+	}, {
+		name: "sparse_small_last",
+		opts: IteratorOpts{
+			From: time.Unix(int64(start+15), 0),
+			To:   time.Unix(int64(start+5), 0),
+		},
+		prec: 5 * time.Second,
+		last: true,
+		expects: [][]int{
+			{10},
+			{15},
 		},
 	}, {
 		name: "sparse_overbound",
@@ -194,6 +227,24 @@ func TestReadExact(t *testing.T) {
 			{6, 7, 8, 9, 10},
 			{11, 12, 13, 14, 15},
 			{16, 17, 18, 19, 20},
+			{},
+			{},
+		},
+	}, {
+		name: "sparse_overbound_last",
+		opts: IteratorOpts{
+			From: time.Unix(int64(start+30), 0),
+			To:   time.Unix(int64(start-10), 0),
+		},
+		prec: 5 * time.Second,
+		last: true,
+		expects: [][]int{
+			{},
+			{},
+			{5},
+			{10},
+			{15},
+			{20},
 			{},
 			{},
 		},
@@ -282,18 +333,18 @@ func TestReadExact(t *testing.T) {
 			}
 			defer r.Close()
 
-			buckets := r.ReadExact(test.prec)
+			buckets := r.readExact(test.prec, test.last)
 			expects := test.expects
 
 			if test.fill {
-				buckets.Fill()
+				buckets.FillGaps(1)
 			}
 
 			if len(buckets.Buckets) != len(expects) {
 				t.Fatalf("unexpected buckets:\n"+
 					"expected %02d: %v\n"+
 					"got      %02d: %v",
-					len(expects), expects, len(buckets.Buckets), ixSlice(buckets.Buckets),
+					len(expects), expects, len(buckets.Buckets), bucketIxs(buckets.Buckets),
 				)
 			}
 
@@ -306,7 +357,7 @@ func TestReadExact(t *testing.T) {
 						"got      %02d: %v\n",
 						i,
 						len(expectsSnapshots), expectsSnapshots,
-						len(bucket.Snapshots), bucket.Snapshots,
+						len(bucket.Snapshots), snapshotIxs(bucket.Snapshots),
 					)
 					continue
 				}

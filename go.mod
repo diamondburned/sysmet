@@ -7,7 +7,6 @@ require (
 	github.com/diamondburned/tmplutil v0.0.0-20210405231014-0aed68593326
 	github.com/dustin/go-humanize v1.0.0
 	github.com/go-chi/chi v1.5.4
-	github.com/montanaflynn/stats v0.6.5 // indirect
 	github.com/pkg/errors v0.9.1
 	github.com/shirou/gopsutil/v3 v3.21.2
 	github.com/tdewolff/minify/v2 v2.9.15
