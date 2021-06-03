@@ -315,39 +315,27 @@ type SnapshotBuckets struct {
 // threshold. A good gapMult value is 0.10.
 func (buckets *SnapshotBuckets) FillGaps(gapPerc float64) {
 	threshold := buckets.GapThreshold(gapPerc)
-	gapStart := -1
-	gapX := 0
+	nonEmpty := len(buckets.Buckets) - 1
 
-	var prev []Snapshot
+	cpy := func(from int) {
+		for j := from + 1; j < nonEmpty; j++ {
+			buckets.Buckets[j] = buckets.Buckets[nonEmpty]
+		}
+		nonEmpty = from
+	}
 
-	for i := len(buckets.Buckets) - 1; i >= 0; i-- {
-		snapshots := buckets.Buckets[i].Snapshots
-		if len(snapshots) > 0 {
-			gapX = 0
-			prev = snapshots
+	for i := nonEmpty; i >= 0; i-- {
+		// Skip empty buckets (we're only counting in-between non-empty buckets)
+		// unless we're at the end.
+		if len(buckets.Buckets[i].Snapshots) == 0 && i != 0 {
 			continue
 		}
 
-		// If we have a previous snapshot and we're not yet over the threshold.
-		if len(prev) > 0 && gapX < threshold {
-			if gapX == 0 {
-				gapStart = i
-			}
-
-			buckets.Buckets[i].Snapshots = prev
-			gapX++
-			continue
+		if gap := nonEmpty - i; 0 < gap && gap < threshold {
+			// Non-empty snapshot found. Copy from the last non-empty to this
+			// one if we're within the threshold.
+			cpy(i)
 		}
-
-		if gapX >= threshold {
-			// Yielded over the threshold. Try to undo the gaps.
-			for j := gapStart; j > i; j-- {
-				buckets.Buckets[j].Snapshots = nil
-			}
-		}
-
-		gapX = 0
-		prev = nil
 	}
 }
 
@@ -355,7 +343,7 @@ func (buckets *SnapshotBuckets) FillGaps(gapPerc float64) {
 // buckets. The given perc variable determines the percentage from 0 to 1 that
 // determines after how many empty buckets should be treated as a gap.
 func (buckets SnapshotBuckets) GapThreshold(perc float64) int {
-	return int(math.Ceil(float64(len(buckets.Buckets)) * perc))
+	return int(math.Round(float64(len(buckets.Buckets)) * perc))
 }
 
 // Below lies the magical mean/std-dev method.

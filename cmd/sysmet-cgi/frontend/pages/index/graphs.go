@@ -143,17 +143,17 @@ var graphFlatteners = map[string]graphFlattenFunc{
 
 		lastActive := metric.NaN
 		lastTotal := metric.NaN
+		lastUsage := metric.NaN
 
 		for i := len(buckets.Buckets) - 1; i >= 0; i-- {
 			// Calculate the sum of all cores into one core, then sum up all of
 			// that core's times.
 			active, total := cpuUsageBuckets(buckets.Buckets[i])
-
 			// NaN is NOT larger than NaN.
 			if lastActive > active && lastTotal > total {
-				data.Samplesets[0][i] = (lastActive - active) / (lastTotal - total) * 100
+				lastUsage = (lastActive - active) / (lastTotal - total) * 100
 			}
-
+			data.Samplesets[0][i] = lastUsage
 			lastActive, lastTotal = active, total
 		}
 
@@ -204,6 +204,7 @@ var graphFlatteners = map[string]graphFlattenFunc{
 		// because the bytes counts are cumulative.
 		lastSent := metric.NaN
 		lastRecv := metric.NaN
+		lastData := [2]float64{metric.NaN, metric.NaN}
 
 		for i := len(buckets.Buckets) - 1; i >= 0; i-- {
 			bucket := buckets.Buckets[i]
@@ -216,9 +217,14 @@ var graphFlatteners = map[string]graphFlattenFunc{
 			currSent, currRecv := sumNetworks(buckets.Buckets[i])
 
 			if lastSent > currSent && lastRecv > currRecv {
-				data.Samplesets[0][i] = lastSent - currSent
-				data.Samplesets[1][i] = lastRecv - currRecv
+				lastData = [2]float64{
+					lastSent - currSent,
+					lastRecv - currRecv,
+				}
 			}
+
+			data.Samplesets[0][i] = lastData[0]
+			data.Samplesets[1][i] = lastData[1]
 
 			lastSent, lastRecv = currSent, currRecv
 		}
@@ -231,14 +237,14 @@ var graphFlatteners = map[string]graphFlattenFunc{
 		data.MaxSample = metric.AutoValue
 		data.PtString = metric.FormatBytes
 		data.Colors = []uint32{
-			// https://colorswall.com/palette/102/
-			0xff0000,
-			0xffa500,
-			0xffff00,
-			0x008000,
-			0x0000ff,
-			0x4b0082,
-			0xee82ee,
+			// https://colorswall.com/palette/102/, with 53.3% alpha.
+			0xff000088,
+			0xffa50088,
+			0xffff0088,
+			0x00800088,
+			0x0000ff88,
+			0x4b008288,
+			0xee82ee88,
 		}
 
 		type diskUsage struct {

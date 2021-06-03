@@ -69,7 +69,7 @@ func ReadSnapshots(path string, dura time.Duration) (sysmet.SnapshotBuckets, err
 	defer iter.Close()
 
 	buckets := iter.ReadBucketEdges(dura / PointsPerGraph)
-	buckets.FillGaps(0.10)
+	buckets.FillGaps(0.15)
 
 	return buckets, nil
 }
