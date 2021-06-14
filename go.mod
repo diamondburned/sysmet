@@ -10,6 +10,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/shirou/gopsutil/v3 v3.21.2
 	github.com/tdewolff/minify/v2 v2.9.15
+	github.com/tdewolff/parse v2.3.4+incompatible // indirect
 	go.etcd.io/bbolt v1.3.5
 	maze.io/x/duration v0.0.0-20160924141736-faac084b6075
 )

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"git.unix.lgbt/diamondburned/sysmet"
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-cgi/frontend/components/metric"
+	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/frontend/components/metric"
 	"github.com/dustin/go-humanize"
 	"github.com/shirou/gopsutil/v3/cpu"
 )

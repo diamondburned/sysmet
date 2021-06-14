@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-cgi/frontend"
+	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/frontend"
 )
 
 var errbox = frontend.Templater.Subtemplate("errbox")

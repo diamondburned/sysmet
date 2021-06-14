@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"git.unix.lgbt/diamondburned/sysmet"
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-cgi/frontend"
+	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/frontend"
 	"github.com/dustin/go-humanize"
 )
 

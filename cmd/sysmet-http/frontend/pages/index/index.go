@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"git.unix.lgbt/diamondburned/sysmet"
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-cgi/frontend"
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-cgi/frontend/components/metric"
+	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/frontend"
+	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/frontend/components/metric"
 )
 
 var index = frontend.Templater.Register("index", "pages/index/index.html")
