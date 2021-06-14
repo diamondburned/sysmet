@@ -21,7 +21,7 @@ var webFS embed.FS
 var Templater = tmplutil.Templater{
 	FileSystem: webFS,
 	Includes: map[string]string{
-		"rawcss": "static/index.css",
+		"rawcss": "static/style.css",
 	},
 	Functions: template.FuncMap{},
 }
