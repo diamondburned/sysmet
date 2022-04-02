@@ -1,7 +1,6 @@
 package sysmet
 
 import (
-	"encoding/json"
 	"math"
 	"time"
 
@@ -29,6 +28,7 @@ type Iterator struct {
 	// current state
 	key   []byte
 	value []byte
+	error error
 
 	// constants
 	to   uint32
@@ -110,13 +110,13 @@ func (i *Iterator) Prev(snapshot *Snapshot) bool {
 
 func (i *Iterator) readSnapshot(snapshot *Snapshot) bool {
 	// Unmarshal fail is a fatal error, so we invalidate everything.
-	if err := json.Unmarshal(i.value, snapshot); err != nil {
+	if err := decodeSnapshot(i.value, snapshot); err != nil {
+		i.error = err
 		return false
 	}
 
 	// Update the timestamp.
-	snapshot.Time = readUnixBE(i.key)
-
+	snapshot.time = readUnixBE(i.key)
 	return true
 }
 
@@ -183,20 +183,20 @@ type BucketRange struct {
 // will describe exactly the requested range and precision. The cursor will
 // automatically be rewound back to the "from" position. The function returns a
 // zero-value if from or to was 0.
-func (i *Iterator) ReadExact(precision time.Duration) SnapshotBuckets {
+func (i *Iterator) ReadExact(precision time.Duration) (SnapshotBuckets, error) {
 	return i.readExact(precision, false)
 }
 
 // ReadBucketEdges behaves similarly to ReadExact, except each bucket will only
 // have the latest point. This is great when data has to be read over a wide
 // range of time.
-func (i *Iterator) ReadBucketEdges(precision time.Duration) SnapshotBuckets {
+func (i *Iterator) ReadBucketEdges(precision time.Duration) (SnapshotBuckets, error) {
 	return i.readExact(precision, true)
 }
 
-func (i *Iterator) readExact(precision time.Duration, last bool) SnapshotBuckets {
+func (i *Iterator) readExact(precision time.Duration, last bool) (SnapshotBuckets, error) {
 	if i.from == 0 || i.to == 0 {
-		return SnapshotBuckets{}
+		return SnapshotBuckets{}, nil
 	}
 
 	from := float64(i.from)
@@ -226,7 +226,7 @@ func (i *Iterator) readExact(precision time.Duration, last bool) SnapshotBuckets
 			}
 
 			if !i.readSnapshot(&buckets.Snapshots[blen-1]) {
-				return SnapshotBuckets{}
+				return SnapshotBuckets{}, i.error
 			}
 			blen--
 
@@ -241,7 +241,7 @@ func (i *Iterator) readExact(precision time.Duration, last bool) SnapshotBuckets
 
 	// Exit if we have no snapshots.
 	if len(buckets.Snapshots) == 0 {
-		return buckets
+		return buckets, i.error
 	}
 
 	snapshotIx := len(buckets.Snapshots) - 1 // iterate last to first
@@ -281,7 +281,7 @@ func (i *Iterator) readExact(precision time.Duration, last bool) SnapshotBuckets
 		snapshot := buckets.Snapshots[snapshotIx]
 
 		// Test if the snapshot is within the bucket.
-		if uint32(bucketTo) < snapshot.Time && snapshot.Time <= uint32(bucketFrom) {
+		if uint32(bucketTo) < snapshot.time && snapshot.time <= uint32(bucketFrom) {
 			snapshotIx--
 			continue
 		}
@@ -294,7 +294,7 @@ func (i *Iterator) readExact(precision time.Duration, last bool) SnapshotBuckets
 		cutBucket()
 	}
 
-	return buckets
+	return buckets, i.error
 }
 
 // SnapshotBucket contains a bucket of snapshot timeframes. It is used by

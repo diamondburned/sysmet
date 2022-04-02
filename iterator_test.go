@@ -103,7 +103,7 @@ func gatherMetrics(t *testing.T, n, now uint32) []Snapshot {
 func newFakeSnapshot(start, i uint32) Snapshot {
 	return Snapshot{
 		// Mock a timestamp.
-		Time:      start + i,
+		time:      start + i,
 		HostStats: load.MiscStat{Ctxt: int(i)},
 	}
 }
@@ -313,7 +313,7 @@ func TestReadExact(t *testing.T) {
 		expects: [][]int{
 			{1},
 			{2},
-			{}, {}, {},
+			{9}, {9}, {9}, // intentional
 			{9},
 			{10},
 			{13}, // 11, 12
@@ -333,7 +333,11 @@ func TestReadExact(t *testing.T) {
 			}
 			defer r.Close()
 
-			buckets := r.readExact(test.prec, test.last)
+			buckets, err := r.readExact(test.prec, test.last)
+			if err != nil {
+				t.Fatal("cannot read:", err)
+			}
+
 			expects := test.expects
 
 			if test.fill {
@@ -347,6 +351,9 @@ func TestReadExact(t *testing.T) {
 					len(expects), expects, len(buckets.Buckets), bucketIxs(buckets.Buckets),
 				)
 			}
+
+			t.Logf("expects: %v\n", expects)
+			t.Logf("got:     %v\n", bucketIxs(buckets.Buckets))
 
 			for i, bucket := range buckets.Buckets {
 				expectsSnapshots := expects[i]
@@ -423,8 +430,8 @@ func TestReadAll(t *testing.T) {
 			}
 
 			for i, snapshot := range snapshots {
-				if snapshot.Time == 0 {
-					t.Error("missing snapshot time", snapshot.Time)
+				if snapshot.time == 0 {
+					t.Error("missing snapshot time")
 				}
 				if snapshot.HostStats.Ctxt != test.expectsRange[0]+i {
 					t.Errorf(
