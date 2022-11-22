@@ -63,10 +63,8 @@ func newIterator(db *badger.DB, opts IteratorOpts) (*Iterator, error) {
 
 	i.tx = db.NewTransaction(false)
 	i.it = i.tx.NewIterator(badger.IteratorOptions{
-		PrefetchValues: true,
-		PrefetchSize:   2,
-		Prefix:         bkey(bPoints),
-		Reverse:        true, // from is later than to
+		Prefix:  bkey(bPoints),
+		Reverse: true, // from is later than to
 	})
 
 	i.Rewind()
