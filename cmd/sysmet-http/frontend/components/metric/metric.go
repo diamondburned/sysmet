@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"git.unix.lgbt/diamondburned/sysmet"
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/frontend"
+	"git.unix.lgbt/diamondburned/sysmet/v3"
+	"git.unix.lgbt/diamondburned/sysmet/v3/cmd/sysmet-http/frontend"
 	"github.com/dustin/go-humanize"
 )
 

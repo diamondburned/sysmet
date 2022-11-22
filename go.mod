@@ -1,4 +1,4 @@
-module git.unix.lgbt/diamondburned/sysmet
+module git.unix.lgbt/diamondburned/sysmet/v3
 
 go 1.16
 

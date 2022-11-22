@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"git.unix.lgbt/diamondburned/sysmet"
+	"git.unix.lgbt/diamondburned/sysmet/v3"
 	"github.com/pkg/errors"
 )
 

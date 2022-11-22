@@ -4,7 +4,7 @@ import (
 	"io"
 	"net/http"
 
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/frontend"
+	"git.unix.lgbt/diamondburned/sysmet/v3/cmd/sysmet-http/frontend"
 )
 
 var errpage = frontend.Templater.Register("errpage", "pages/errpage/errpage.html")

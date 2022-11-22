@@ -31,6 +31,7 @@ type Version uint8
 const (
 	Version1 Version = iota
 	Version2
+	Version3
 )
 
 // this is never a valid JSON character

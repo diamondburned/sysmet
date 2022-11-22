@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"git.unix.lgbt/diamondburned/sysmet"
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/frontend/components/metric"
+	"git.unix.lgbt/diamondburned/sysmet/v3"
+	"git.unix.lgbt/diamondburned/sysmet/v3/cmd/sysmet-http/frontend/components/metric"
 	"github.com/dustin/go-humanize"
 	"github.com/shirou/gopsutil/v3/cpu"
 )

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/frontend"
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/frontend/pages/errpage"
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/frontend/pages/index"
+	"git.unix.lgbt/diamondburned/sysmet/v3/cmd/sysmet-http/frontend"
+	"git.unix.lgbt/diamondburned/sysmet/v3/cmd/sysmet-http/frontend/pages/errpage"
+	"git.unix.lgbt/diamondburned/sysmet/v3/cmd/sysmet-http/frontend/pages/index"
 	"github.com/diamondburned/tmplutil"
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"

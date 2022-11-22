@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"git.unix.lgbt/diamondburned/sysmet/cmd/sysmet-http/handler"
+	"git.unix.lgbt/diamondburned/sysmet/v3/cmd/sysmet-http/handler"
 )
 
 var dbPath string

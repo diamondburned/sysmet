@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"git.unix.lgbt/diamondburned/sysmet"
+	"git.unix.lgbt/diamondburned/sysmet/v3"
 	"github.com/diamondburned/tmplutil"
 	"github.com/pkg/errors"
 )
