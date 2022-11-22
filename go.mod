@@ -1,6 +1,6 @@
 module git.unix.lgbt/diamondburned/sysmet/v3
 
-go 1.16
+go 1.18
 
 replace maze.io/x/duration => github.com/diamondburned/duration v0.0.0-20160924141736-faac084b6075
 
