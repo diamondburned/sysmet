@@ -18,14 +18,14 @@ type testedDatabase struct {
 
 // prepDB prepares a database with 20 datapoints over the span of a second. The
 // host stats' ctxt is used as the index.
-func prepDB(t *testing.T, snapshots []Snapshot, now uint32) *testedDatabase {
+func prepDB(t testing.TB, snapshots []Snapshot, now uint32) *testedDatabase {
 	t.Helper()
 
 	if snapshots == nil {
 		snapshots = gatherMetrics(t, 20, now)
 	}
 
-	tmpDir := os.TempDir()
+	tmpDir := t.TempDir()
 	f, err := os.CreateTemp(tmpDir, "sysmet-test-")
 	if err != nil {
 		t.Fatal("failed to mktemp for db:", err)
@@ -82,7 +82,7 @@ func prepDB(t *testing.T, snapshots []Snapshot, now uint32) *testedDatabase {
 	return &db
 }
 
-func gatherMetrics(t *testing.T, n, now uint32) []Snapshot {
+func gatherMetrics(t testing.TB, n, now uint32) []Snapshot {
 	t.Helper()
 
 	snapshots := make([]Snapshot, n)
@@ -432,6 +432,7 @@ func TestReadAll(t *testing.T) {
 			for i, snapshot := range snapshots {
 				if snapshot.time == 0 {
 					t.Error("missing snapshot time")
+					continue
 				}
 				if snapshot.HostStats.Ctxt != test.expectsRange[0]+i {
 					t.Errorf(
@@ -441,5 +442,20 @@ func TestReadAll(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func BenchmarkReadAll(b *testing.B) {
+	start := uint32(time.Now().Unix())
+	db := prepDB(b, nil, start)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r, err := db.Iterator(IteratorOpts{})
+		if err != nil {
+			b.Fatal("failed to create reader:", err)
+		}
+		r.ReadAll()
+		r.Close()
 	}
 }

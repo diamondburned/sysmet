@@ -8,6 +8,8 @@ import (
 	"os"
 	"time"
 
+	"git.unix.lgbt/diamondburned/sysmet/v3/internal/badgerlog"
+	"github.com/dgraph-io/badger/v3"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/pkg/errors"
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -16,13 +18,22 @@ import (
 	"github.com/shirou/gopsutil/v3/load"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/net"
-	"go.etcd.io/bbolt"
+
+	badgeropts "github.com/dgraph-io/badger/v3/options"
 )
 
 // Bucket names containing sysmet versions.
+//
+// We no longer have buckets with badger, so we use a minimal prefix instead,
+// which we should keep as short as possible.
 var (
-	bucketName   = []byte("sysmet-v2")
+	bucketName   = []byte("s3")
+	bucketNameV2 = []byte("sysmet-v2")
 	bucketNameV1 = []byte("sysmet-v1")
+)
+
+var (
+	bPoints = []byte("p")
 )
 
 // Version is the type for the version of the Sysmet database format.
@@ -34,6 +45,9 @@ const (
 	Version3
 )
 
+// CurrentVersion is the version that Sysmet snapshots will be written as.
+const CurrentVersion = Version3
+
 // this is never a valid JSON character
 const versionBytePrefix = 0xFE
 
@@ -43,13 +57,6 @@ const (
 	Week  = 7 * Day
 	Month = 30 * Day
 )
-
-// CurrentVersion is the version that Sysmet snapshots will be written as.
-const CurrentVersion = Version2
-
-// ErrUninitialized is returned when sysmet's bucket is not found in the
-// database. This may happen when the database has never been updated before.
-var ErrUninitialized = errors.New("bucket not initialized")
 
 // Snapshot describes a single snapshot of data.
 type Snapshot struct {
@@ -100,21 +107,66 @@ func (s Snapshot) UnixTime() int64 { return int64(s.time) }
 
 // Database describes a wrapped database instance.
 type Database struct {
-	db *bbolt.DB
+	db *badger.DB
+	ro bool
 }
 
 // Open opens a database. Databases must be closed once they're done.
 func Open(path string, write bool) (*Database, error) {
-	b, err := bbolt.Open(path, os.ModePerm, &bbolt.Options{
-		Timeout:      time.Minute,
-		FreelistType: bbolt.FreelistArrayType,
-		ReadOnly:     !write,
-	})
+	var v2db *LegacyDatabase
+
+	// Check if path is a V2 database, but we only care if write is true. That
+	// way, we can do migrations right here.
+	if write {
+		var err error
+
+		// Immediately try and open the V2 database. Badger should immediately
+		// call OpenFile with O_EXCL before doing anything else, so it's not
+		// super expensive to do this.
+		v2db, err = OpenLegacyExisting(path)
+		if err == nil {
+			defer v2db.Close()
+
+			// We acquired the database lock. We'll remove it to a new path, so
+			// we can open our v3 database without any issues.
+			if err := os.Rename(path, path+".legacy"); err != nil {
+				v2db.Close()
+				return nil, errors.Wrap(err, "failed to rename v2 database")
+			}
+		}
+	}
+
+	opts := badger.LSMOnlyOptions(path)
+	opts.InMemory = path == ":memory:"
+	opts.ReadOnly = !write
+	opts.Compression = badgeropts.ZSTD
+	opts.ZSTDCompressionLevel = 1
+	opts.DetectConflicts = false
+	opts.MetricsEnabled = false
+	opts.NumGoroutines = 4
+	opts.NumCompactors = 4
+	opts.Logger = badgerlog.NewDefaultLogger()
+
+	b, err := badger.Open(opts)
 	if err != nil {
 		return nil, errors.Wrap(err, "bbolt")
 	}
 
-	return &Database{b}, nil
+	v3db := &Database{
+		db: b,
+		ro: !write,
+	}
+
+	// If we're writing and we have a V2 database previously, then we can
+	// migrate the database.
+	if v2db != nil {
+		if err := v2db.MigrateV2toV3(v3db); err != nil {
+			v3db.Close()
+			return nil, errors.Wrap(err, "failed to migrate v2 to v3")
+		}
+	}
+
+	return v3db, nil
 }
 
 // Close closes the database. Calling Close twice does nothing.
@@ -125,7 +177,7 @@ func (db *Database) Close() error {
 // GC cleans up the database. Since this is a fairly expensive operation, it
 // should only be called rarely.
 func (db *Database) GC(age time.Duration) error {
-	if db.db.IsReadOnly() {
+	if db.ro {
 		return errors.New("database not writable")
 	}
 
@@ -139,71 +191,17 @@ func (db *Database) gc(now, sec uint32) error {
 	// precalculate the key for seeking.
 	before := unixToBE(now - sec)
 
-	return db.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket(bucketName)
-		if b == nil {
-			return ErrUninitialized
-		}
+	return db.db.Update(func(tx *badger.Txn) error {
+		iter := tx.NewKeyIterator(bkey(bPoints), badger.IteratorOptions{
+			Reverse: true,
+		})
+		iter.Rewind()
+		defer iter.Close()
 
-		cs := b.Cursor()
-
-		for k, _ := cs.Seek(before); k != nil; k, _ = cs.Prev() {
-			if err := cs.Delete(); err != nil {
-				return errors.Wrap(err, "failed to delete under cursor")
-			}
-		}
-
-		return nil
-	})
-}
-
-// MigrateFromV1 migrates the database from v1.
-func (db *Database) MigrateFromV1(max time.Duration) error {
-	if db.db.IsReadOnly() {
-		return errors.New("database not writable")
-	}
-
-	now := convertWithUnixZero(time.Now())
-	sec := uint32(max / time.Second)
-
-	if err := db.gc(now, sec); err != nil {
-		return errors.Wrap(err, "cannot gc database")
-	}
-
-	before := unixToBE(now - sec)
-
-	return db.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket(bucketNameV1)
-		if b == nil {
-			return ErrUninitialized
-		}
-
-		cs := b.Cursor()
-		var s Snapshot
-		var buf bytes.Buffer
-		buf.Grow(1024)
-
-		for k, v := cs.Seek(before); k != nil; k, v = cs.Next() {
-			// Try and delete. Ignore if it's a bucket.
-			if err := cs.Delete(); err != nil {
-				continue
-			}
-
-			s = Snapshot{}
-			buf.Reset()
-
-			if err := decodeSnapshot(v, &s); err != nil {
-				continue
-			}
-
-			// Re-encode.
-			if err := encodeSnapshotBuf(s, &buf); err != nil {
-				// If we can't reencode a valid snapshot, then that's not good.
-				return errors.Wrap(err, "cannot encode snapshot")
-			}
-
-			if err := b.Put(k, buf.Bytes()); err != nil {
-				return errors.Wrap(err, "cannot put into database")
+		for iter.Seek(bkey(bPoints, before)); iter.Valid(); iter.Next() {
+			item := iter.Item()
+			if err := tx.Delete(item.KeyCopy(nil)); err != nil {
+				return errors.Wrap(err, "failed to delete under iterator")
 			}
 		}
 
@@ -213,26 +211,19 @@ func (db *Database) MigrateFromV1(max time.Duration) error {
 
 // Update updates a set of prepared metrics into the database.
 func (db *Database) Update(snapshot Snapshot) error {
-	if db.db.IsReadOnly() {
+	if db.ro {
 		return errors.New("database not writable")
 	}
 
+	k := unixToBE(snapshot.time)
 	v, err := encodeSnapshot(snapshot)
 	if err != nil {
 		return err
 	}
-	k := unixToBE(snapshot.time)
 
-	tx := func(tx *bbolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists(bucketName)
-		if err != nil {
-			return errors.Wrap(err, "failed to create bucket")
-		}
-
-		return b.Put(k, v)
-	}
-
-	if err = db.db.Update(tx); err != nil {
+	if err = db.db.Update(func(tx *badger.Txn) error {
+		return tx.Set(bkey(bPoints, k), v)
+	}); err != nil {
 		return errors.Wrap(err, "failed to update db")
 	}
 
@@ -248,7 +239,7 @@ func encodeSnapshot(snapshot Snapshot) ([]byte, error) {
 
 func encodeSnapshotBuf(snapshot Snapshot, buf *bytes.Buffer) error {
 	buf.WriteByte(versionBytePrefix)
-	buf.WriteByte(byte(Version2))
+	buf.WriteByte(byte(CurrentVersion))
 
 	if err := cbor.NewEncoder(buf).Encode(snapshot); err != nil {
 		return errors.Wrap(err, "failed to marshal")
@@ -269,7 +260,7 @@ func decodeSnapshot(b []byte, dst *Snapshot) (err error) {
 	switch version {
 	case Version1:
 		err = json.Unmarshal(b, dst)
-	case Version2:
+	case Version2, Version3:
 		err = cbor.Unmarshal(b, dst)
 	default:
 		err = fmt.Errorf("unknown version %q", version)
@@ -295,6 +286,30 @@ func convertWithUnixZero(t time.Time) uint32 {
 		return 0
 	}
 	return uint32(t.Unix())
+}
+
+// keysep is a separator used to separate keys in the database.
+var keysep = []byte{0x00}
+
+func bkeyTrim(b []byte, prefixes ...[]byte) []byte {
+	b = bytes.TrimPrefix(b, bucketName)
+	b = bytes.TrimPrefix(b, keysep)
+	for _, prefix := range prefixes {
+		b = bytes.TrimPrefix(b, prefix)
+		b = bytes.TrimPrefix(b, keysep)
+	}
+	return b
+}
+
+func bkey(parts ...[]byte) []byte {
+	var buf bytes.Buffer
+	buf.Grow(16)
+	buf.Write(bucketName)
+	for _, part := range parts {
+		buf.Write(keysep)
+		buf.Write(part)
+	}
+	return buf.Bytes()
 }
 
 // Iterator returns a new database iterator with second precision. The iterator

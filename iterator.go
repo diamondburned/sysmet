@@ -1,11 +1,13 @@
 package sysmet
 
 import (
+	"bytes"
+	"log"
 	"math"
 	"time"
 
+	"github.com/dgraph-io/badger/v3"
 	"github.com/pkg/errors"
-	"go.etcd.io/bbolt"
 )
 
 // IteratorOpts is the options for reading. It describes the range of data to
@@ -22,21 +24,22 @@ type IteratorOpts struct {
 
 // Iterator is a backwards metric iterator that allows iterating over points.
 type Iterator struct {
-	tx *bbolt.Tx
-	cs *bbolt.Cursor
+	tx *badger.Txn
+	it *badger.Iterator
 
 	// current state
-	key   []byte
-	value []byte
+	item  *badger.Item
 	error error
 
 	// constants
-	to   uint32
-	from uint32
+	begin []byte
+	end   []byte
+	to    uint32
+	from  uint32
 }
 
-// newIterator creates a new iterator. See (*Databse).Iterator.
-func newIterator(db *bbolt.DB, opts IteratorOpts) (*Iterator, error) {
+// newIterator creates a new iterator. See (*Database).Iterator.
+func newIterator(db *badger.DB, opts IteratorOpts) (*Iterator, error) {
 	if !opts.To.IsZero() && !opts.From.IsZero() {
 		if !opts.From.After(opts.To) {
 			return nil, errors.New("opts.From should be after opts.To")
@@ -48,18 +51,23 @@ func newIterator(db *bbolt.DB, opts IteratorOpts) (*Iterator, error) {
 		from: convertWithUnixZero(opts.From),
 	}
 
-	tx, err := db.Begin(false)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to begin tx")
+	// If from is 0, then we start at the end of time.
+	if i.from == 0 {
+		i.begin = bkey(bPoints, unixToBE(math.MaxUint32))
+	} else {
+		i.begin = bkey(bPoints, unixToBE(i.from))
 	}
 
-	bucket := tx.Bucket(bucketName)
-	if bucket == nil {
-		return nil, ErrUninitialized
-	}
+	// If to is 0, then we end at the beginning of time. This is the default.
+	i.end = bkey(bPoints, unixToBE(i.to))
 
-	i.tx = tx
-	i.cs = bucket.Cursor()
+	i.tx = db.NewTransaction(false)
+	i.it = i.tx.NewIterator(badger.IteratorOptions{
+		PrefetchValues: true,
+		PrefetchSize:   2,
+		Prefix:         bkey(bPoints),
+		Reverse:        true, // from is later than to
+	})
 
 	i.Rewind()
 
@@ -68,17 +76,40 @@ func newIterator(db *bbolt.DB, opts IteratorOpts) (*Iterator, error) {
 
 // Close closes the reader.
 func (i *Iterator) Close() error {
-	return i.tx.Rollback()
+	i.it.Close()
+	i.tx.Discard()
+	return nil
 }
 
-// step updates the internal cursor backwards.
-func (i *Iterator) step() {
-	i.key, i.value = i.cs.Prev()
+func (i *Iterator) setItem() {
+	if i.it.Valid() {
+		i.item = i.it.Item()
+	} else {
+		i.item = nil
+	}
+}
+
+func (i *Iterator) itemTime() uint32 {
+	key := bkeyTrim(i.item.Key(), bPoints)
+	return readUnixBE(key)
+}
+
+func (i *Iterator) seek(t uint32) {
+	i.it.Seek(bkey(bPoints, unixToBE(t)))
+	i.setItem()
 }
 
 // isValid returns true if the reader is still valid.
 func (i *Iterator) isValid() bool {
-	return i.key != nil && (i.to == 0 || i.to <= readUnixBE(i.key))
+	if i.item == nil {
+		return false
+	}
+
+	if i.to == 0 || i.to <= i.itemTime() {
+		return true
+	}
+
+	return false
 }
 
 // Prev reads the previous item into the given snapshot pointer or the last item
@@ -88,35 +119,38 @@ func (i *Iterator) isValid() bool {
 // False is returned if nothing is read and the reader is closed, otherwise true
 // is.
 func (i *Iterator) Prev(snapshot *Snapshot) bool {
-	for i.isValid() {
-		if snapshot != nil {
-			if !i.readSnapshot(snapshot) {
-				break
-			}
-		}
-
-		// Seek for the next call.
-		i.step()
-
-		return true
+	if !i.isValid() {
+		i.item = nil
+		return false
 	}
 
-	// Invalidate the key and value.
-	i.key = nil
-	i.value = nil
+	if snapshot != nil {
+		if !i.readSnapshot(snapshot) {
+			i.item = nil
+			return false
+		}
+	}
 
-	return false
+	// Seek for the next call.
+	i.it.Next()
+	i.setItem()
+
+	return true
 }
 
 func (i *Iterator) readSnapshot(snapshot *Snapshot) bool {
 	// Unmarshal fail is a fatal error, so we invalidate everything.
-	if err := decodeSnapshot(i.value, snapshot); err != nil {
+	if err := i.item.Value(func(v []byte) error {
+		return decodeSnapshot(v, snapshot)
+	}); err != nil {
 		i.error = err
+		log.Println("readSnapshot failed:", i.error)
 		return false
 	}
 
 	// Update the timestamp.
-	snapshot.time = readUnixBE(i.key)
+	snapshot.time = i.itemTime()
+
 	return true
 }
 
@@ -125,8 +159,9 @@ func (i *Iterator) readSnapshot(snapshot *Snapshot) bool {
 // position stays the same by the time this function returns.
 func (i *Iterator) Remaining() int {
 	// Remember the current cursor position before we change it, because we'll
-	// need to preserve this.
-	current := i.key
+	// need to preserve this. We'll also have to copy the key, because the
+	// iterator will reuse the same buffer.
+	current := append([]byte(nil), i.item.Key()...)
 
 	// Attempt to precalculate the number of snapshots to read.
 	var total int
@@ -135,7 +170,17 @@ func (i *Iterator) Remaining() int {
 	}
 
 	// Seek back to where we were.
-	i.key, i.value = i.cs.Seek(current)
+	i.it.Rewind()
+	i.it.Seek(current)
+	if !i.it.Valid() {
+		log.Panicln("Remaining: cannot seek back to last known key")
+	}
+
+	i.setItem()
+	if !bytes.Equal(i.item.Key(), current) {
+		log.Panicf("Remaining: cannot seek back to last known key: known %d != new %d",
+			current, readUnixBE(i.it.Item().Key()))
+	}
 
 	return total
 }
@@ -154,14 +199,9 @@ func (i *Iterator) ReadRemaining() []Snapshot {
 
 // Rewind resets the cursor back to the initial position.
 func (i *Iterator) Rewind() {
-	i.key, i.value = i.cs.Last()
-
-	// Skip if the current time is ahead of what we want to read.
-	if i.from > 0 {
-		for i.from < readUnixBE(i.key) {
-			i.step()
-		}
-	}
+	i.it.Rewind()
+	i.it.Seek(i.begin)
+	i.setItem()
 }
 
 // ReadAll is similar to ReadRemaining, except the cursor is rewound to the
@@ -219,11 +259,12 @@ func (i *Iterator) readExact(precision time.Duration, last bool) (SnapshotBucket
 		prev := i.from // from == end, to == start
 		prec := uint32(prec)
 
-		for i.Rewind(); blen > 0 && i.isValid(); i.step() {
-			time := readUnixBE(i.key)
-			if time > prev {
-				continue
-			}
+		// Reset the iterator to the end, then seek it to where we want to go.
+		i.it.Rewind()
+
+		for i.seek(prev); blen > 0 && i.isValid(); i.seek(prev) {
+			key := bkeyTrim(i.item.Key(), bPoints)
+			time := readUnixBE(key)
 
 			if !i.readSnapshot(&buckets.Snapshots[blen-1]) {
 				return SnapshotBuckets{}, i.error

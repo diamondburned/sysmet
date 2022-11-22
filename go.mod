@@ -5,7 +5,7 @@ go 1.16
 replace maze.io/x/duration => github.com/diamondburned/duration v0.0.0-20160924141736-faac084b6075
 
 require (
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/dgraph-io/badger/v3 v3.2103.4
 	github.com/diamondburned/tmplutil v0.0.0-20210405231014-0aed68593326
 	github.com/dustin/go-humanize v1.0.0
 	github.com/fxamacker/cbor/v2 v2.4.0
