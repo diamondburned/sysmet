@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"git.unix.lgbt/diamondburned/sysmet/v3/internal/badgerlog"
@@ -114,12 +115,11 @@ type Database struct {
 // Open opens a database. Databases must be closed once they're done.
 func Open(path string, write bool) (*Database, error) {
 	var v2db *LegacyDatabase
+	var err error
 
 	// Check if path is a V2 database, but we only care if write is true. That
 	// way, we can do migrations right here.
 	if write {
-		var err error
-
 		// Immediately try and open the V2 database. Badger should immediately
 		// call OpenFile with O_EXCL before doing anything else, so it's not
 		// super expensive to do this.
@@ -147,9 +147,23 @@ func Open(path string, write bool) (*Database, error) {
 	opts.NumCompactors = 4
 	opts.Logger = badgerlog.NewDefaultLogger()
 
-	b, err := badger.Open(opts)
-	if err != nil {
-		return nil, errors.Wrap(err, "bbolt")
+	var b *badger.DB
+	// Try for a maximum of 40 times. 40*500ms is 20 seconds, so that's the
+	// maximum blocking time.
+	for i := 0; i < 40; i++ {
+		if b, err = badger.Open(opts); err == nil {
+			break
+		}
+
+		// Badger is kind of funky. It refuses to wait for the flock and
+		// instead will immediately exit. Because of that, we want to
+		// manually do this ourselves.
+		if !strings.Contains(err.Error(), "Another process is using this Badger database") {
+			return nil, errors.Wrap(err, "badgerdb")
+		}
+
+		// Unfortunate. Something else had the lock. Wait a bit and try again.
+		time.Sleep(250 * time.Millisecond)
 	}
 
 	v3db := &Database{
